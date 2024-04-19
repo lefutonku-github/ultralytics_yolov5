@@ -126,7 +126,7 @@ def train(opt, device):
         workers=nw,
     )
 
-    test_dir = data_dir / "test" if (data_dir / "test").exists() else data_dir / "val"  # data/test or data/val
+    test_dir = data_dir / "val" if (data_dir / "val").exists() else data_dir / "test"  # data/test or data/val
     if RANK in {-1, 0}:
         testloader = create_classification_dataloader(
             path=test_dir,
