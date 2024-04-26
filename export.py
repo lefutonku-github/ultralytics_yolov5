@@ -205,6 +205,11 @@ def export_onnx(model, im, file, opset, dynamic, simplify, prefix=colorstr("ONNX
         meta = model_onnx.metadata_props.add()
         meta.key, meta.value = k, str(v)
     onnx.save(model_onnx, f)
+    ##>>>> also save names
+    if isinstance(model.names, dict):
+        import numpy as np
+        names = np.asarray([(k, v) for k, v in model.names.items()], dtype=str)
+        np.savetxt(file.with_suffix(".names.csv"), names, fmt="%s", delimiter=",")
 
     # Simplify
     if simplify:
