@@ -33,6 +33,7 @@ import os
 import platform
 import sys
 from pathlib import Path
+import math
 
 import torch
 import torch.nn.functional as F
@@ -147,7 +148,19 @@ def run(
             txt_path = str(save_dir / "labels" / p.stem) + ("" if dataset.mode == "image" else f"_{frame}")  # im.txt
 
             s += "%gx%g " % im.shape[2:]  # print string
-            annotator = Annotator(im0, example=str(names), pil=True)
+            
+            ##>>>> add by liuw7: resize too small im
+            ratio = int(
+                max(
+                    math.ceil(3 * imgsz[1] / im0.shape[1]),
+                    math.ceil(3 * imgsz[0] / im0.shape[0]),
+                )
+            )
+            im_show = cv2.resize(
+                im0, (im0.shape[1] * ratio, im0.shape[0] * ratio)
+            )
+            
+            annotator = Annotator(im_show, example=str(names), pil=True)
 
             # Print results
             top5i = prob.argsort(0, descending=True)[:5].tolist()  # top 5 indices

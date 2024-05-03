@@ -1341,6 +1341,8 @@ class ClassificationDataset(torchvision.datasets.ImageFolder):
         else:  # read image
             im = cv2.imread(f)  # BGR
         if self.album_transforms:
+            if im is None or im.size == 0:
+                print(f"bad file, im empty: {f}")
             sample = self.album_transforms(image=cv2.cvtColor(im, cv2.COLOR_BGR2RGB))["image"]
         else:
             sample = self.torch_transforms(im)

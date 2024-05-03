@@ -210,6 +210,10 @@ def export_onnx(model, im, file, opset, dynamic, simplify, prefix=colorstr("ONNX
         import numpy as np
         names = np.asarray([(k, v) for k, v in model.names.items()], dtype=str)
         np.savetxt(file.with_suffix(".names.csv"), names, fmt="%s", delimiter=",")
+        
+        ## also save a yaml file (list or dict format)
+        names_dict = {"names": model.names}
+        yaml_save(file.with_suffix(".names.yaml"), names_dict)
 
     # Simplify
     if simplify:
