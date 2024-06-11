@@ -134,16 +134,13 @@ class ClassificationModelWrapper(nn.Module):
             cur_topk_labels = []
             for k in idxs:
                 conf = float(prob[i, k])
-                logit = float(logits[i, k])
                 ori_label = self.model.names[int(k)]
                 remapped_label = label_mappings[ori_label] if label_mappings is not None and ori_label in label_mappings else ori_label
-                cur_topk_labels.append((remapped_label, conf, logit, ori_label))
+                cur_topk_labels.append((remapped_label, conf, ori_label))
+                
             labels.append(cur_topk_labels)
             
         labels = np.asarray(labels) ## convert to numpy array
-        
-        # if k == 1:
-        #     return labels[0]
         
         return labels
     
@@ -156,6 +153,9 @@ class ClassificationModelWrapper(nn.Module):
         """ predict all
         """
         return self.predict(x)
+    
+    def has_embeddings(self):
+        return True
     
     def embed(self, x):
         """ forward pass
@@ -171,9 +171,14 @@ class ClassificationModelWrapper(nn.Module):
             ## note: for us, we only take 1 layer output, so different from yolo implementation
             embeddings = nn.functional.adaptive_avg_pool2d(features, (1, 1)).squeeze(-1).squeeze(-1)  # flatten
             
-            embeddings_unbind = torch.unbind(embeddings.to('cpu'), dim=0) ## convert to tuple or list of each batch.
+            ## note: fiftyone requires a return of numpy array, not a list, so directly convert to numpy and not reduce the first dims
+            ## refer to https://docs.voxel51.com/api/fiftyone.core.models.html#fiftyone.core.models.EmbeddingsMixin.embed and https://docs.voxel51.com/api/fiftyone.core.models.html#fiftyone.core.models.EmbeddingsMixin.embed_all for detail
+            # embeddings_unbind = torch.unbind(embeddings.to('cpu'), dim=0) ## convert to tuple or list of each batch.
+            # embeddings_unbind = [embeddings.cpu().numpy() for embeddings in embeddings_unbind]
+            embeddings = embeddings.cpu().numpy()
             
-        return embeddings_unbind
+            
+        return embeddings
     
     def embed_all(self, x):
         """ embed
@@ -284,15 +289,42 @@ def compute_labels(image_paths:str, model, batch_size:int=16, img_size:int=224, 
             labels = model.logits_to_labels(logits, k=topk, label_mappings=label_mappings)
             
             ##>>>> log the results
-            for path, label in zip(paths, labels):
-                results.append((path, *label))
+            for path, label, logit in zip(paths, labels, logits):
+                results.append((path, label, logit.cpu().numpy()))
                 # print(f"image: {path}, label: {label}")
                
     ##>>>> post processing
     return results
 
-def compute_embeddings():
-    return
+def compute_embeddings(image_paths:str, model, batch_size:int=16, img_size:int=224):
+    """ support batch computing for convenience """
+    ##>>>> dataset / data source
+    if isinstance(image_paths, str) and os.path.isdir(image_paths):
+        image_paths = glob(image_paths)
+    
+    ##>>>> dataloader
+    dataloader = BatchDataLoader(
+        dataset=image_paths, 
+        batch_size=batch_size, 
+        img_size=img_size, 
+        transforms=classify_transforms(img_size)
+    )
+    
+    ##>>>> model setup
+    model.eval() ## duplicate but ensure val mode
+    model.warmup()
+    
+    ##>>>> action loop
+    results = []
+    for imgs, paths in tqdm.tqdm(dataloader, total=len(dataloader), desc="batch:"):
+        with torch.no_grad():
+            embeddings = model.embed(imgs)
+            
+            results.append(embeddings)
+            
+    ##>>>> post processing
+    results = np.concatenate(results, axis=0) ## concat along the first dim
+    return results
 
 def create_argparser():
     """ make the argument parser for this script 
@@ -359,6 +391,13 @@ def unit_test_batch_predict():
         img_size=imgsz[0],
         topk=topk,
         label_mappings=label_mappings,
+        )
+    
+    embeddings = compute_embeddings(
+        image_paths=data_source_dir, 
+        model=model_test, 
+        batch_size=batch_size, 
+        img_size=imgsz[0],
         )
     
     pass
