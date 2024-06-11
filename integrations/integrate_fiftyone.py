@@ -154,7 +154,12 @@ class ClassificationModelWrapper(nn.Module):
         """
         return self.predict(x)
     
+    @property
     def has_embeddings(self):
+        return True
+    
+    @property
+    def has_logits(self):
         return True
     
     def embed(self, x):
