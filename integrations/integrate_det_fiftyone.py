@@ -43,6 +43,11 @@ from utils.dataloaders import (
     LoadImages, 
 )
 
+from utils.augmentations import letterbox
+from utils.general import (
+    non_max_suppression, scale_boxes, xyxy2xywh,
+)
+
 ##---- import local moduls
 
 
@@ -51,8 +56,39 @@ from utils.dataloaders import (
 
 ##-----------------------------------------------
 ##---- utils
-class ClassificationModelWrapper(nn.Module):
-    """ directly use `nn.Module` as base class for flexibility.
+class DetectionTransform:
+    def __init__(self, img_size:int=640, stride:int=32) -> None:
+        """ stride shall use the model stride """
+        self._img_size = img_size
+        self._stride=stride
+        self._auto=True  ## for pt model, auto is True
+        pass
+    
+    def __call__(self, im0):
+        im = letterbox(im0, self._img_size, stride=self._stride, auto=self._auto)[0]  # padded resize
+        im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+        im = np.ascontiguousarray(im)  # contiguous
+        
+        ## NOTE: `torch.ToTensor()` directly transform np.ndarray y (H x W x C) in the range [0, 255] to a torch.FloatTensor of shape (C x H x W) in the range [0.0, 1.0] if the numpy.ndarray has dtype = np.uint8
+        ## since we already transpose the image, so no need to use `torch.ToTensor()` here
+        im = torch.from_numpy(im)
+        im /= 255  # 0 - 255 to 0.0 - 1.0
+        return im
+    
+def xyxy2tlwh(x):
+    """Convert nx4 boxes from [x1, y1, x2, y2] to [x, y, w, h] where xy1=top-left, xy2=bottom-right.
+    @Returns:
+       tlwh boxes: [x, y, w, h]
+    """
+    y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+    y[..., 0] = x[..., 0]  # x tl
+    y[..., 1] = x[..., 1]  # y tl
+    y[..., 2] = x[..., 2] - x[..., 0]  # width
+    y[..., 3] = x[..., 3] - x[..., 1]  # height
+    return y
+    
+class DetectionModelWrapper(nn.Module):
+    """ wrap detection model to provide embedings and logits, and directly convert label and to fiftyone formats
     
     later can be changed to `ultralytics.BaseModel` or `fiftyone.FiftyOneYOLOModel` if neccessary. Now we did'nt do that just for simplicity !!
     
@@ -61,6 +97,9 @@ class ClassificationModelWrapper(nn.Module):
         - predict, predict_all
         - embed, embed_all, has_embeddings
         - logits, has_logits, etc
+        
+    @Notes:
+        directly use `nn.Module` as base class for flexibility.
     
     """
     def __init__(self, weights, device=None, label_mappings:dict=None):
@@ -71,132 +110,145 @@ class ClassificationModelWrapper(nn.Module):
             device (_type_, optional): _description_. Defaults to None.
             label_mappings: support internal label mappings for usage convenience
         """
-        super(ClassificationModelWrapper, self).__init__()
+        super(DetectionModelWrapper, self).__init__()
         
         ##>>>> load model
         ## NOTE: use internal class_id -> class_label mapping, but provide extra mapping mechanism for user (eg., to ch name)
-        self.device = select_device(device) if device is None else device
+        self._device = select_device(device) if device is None or device == "" else device
         
-        model = DetectMultiBackend(weights, device=self.device)
-        
-        self.model = model
-        model.eval()
-        
-        ##>>>> internal impls
-        self._backbone = model.model.features
-        
-        ##>>>> extra mappings
-        self._label_mappings = label_mappings
-        
+        self._model = DetectMultiBackend(weights, device=self._device)
+        self._model.eval()
+        self._label_mappings = label_mappings ## object level label mappings
+    
         return
     
-    def warmup(self, imgsz=(1, 3, 640, 640)):
+    def warmup(self, imgsz=(640, 640)): ## default imgsz
         """ warmup the model
         """
-        self.model.warmup(imgsz)
+        assert isinstance(imgsz, tuple) and len(imgsz) == 2, f"imgsz must be a tuple of 2, but got {imgsz}"
+        
+        warmup_imgsz = (1, 3, *imgsz)
+        self._model.warmup(warmup_imgsz)
         return
     
     def forward(self, x):
-        """ forward pass
-        NOTE: to support embeddings, logits, etc
+        """ forward pass. only consider forward in current imgsz
         """
         with torch.no_grad():
-            x = x.to(self.device)
+            x = x.to(self._device)
             ##>>>> logits
-            logits = self.model(x)
-        
-        return logits
+            preds = self._model(x)
+            
+        return preds
     
-    def logits_to_labels(self, logits, k:int=1, label_mappings:dict=None):
-        """ convert logits to labels
-        
+    def predict(self, x, conf_thres=0.25, iou_thres=0.45, ori_imshapes:np.ndarray=None):
+        """ when wrapped by this model , not only simple forward pass, but also post processing, lik nms, xyxy to xywhn etc
         @Args:
-            logits: input logis
-            k: topk, default 1, can be set to k
-            label_mappings: the labels directly from model will be remap again, typically for more readable labels
-            
-        @Returns:
-           typically with [(label, conf, logit), ...] format, sorted by conf in desending order
-           if k == 1, return top1 label, in (label, conf, logit) format
-           if k > 1, return topk labels, in [(label, conf, logit), ...] format
-           if label_mappings is provided, generally in [(remapped_label, conf, logit, original_label), ...] format
+            - x: the input tensor, of shape (bs, c, w, h)
+            - conf_thres: the confidence threshold for nms
+            - iou_thres: the iou threshold for nms
+            - ori_imsizes: the original image sizes, of shape (bs, 2), with type np.ndarray, if not None, will be used to convert the box to relative box
+        @Notes:
+            predict in fiftyone format, but not in fiftyone class, just in common format
         """
-        ##>>>> get topk
-        prob = F.softmax(logits, dim=-1)
-        ## use torch.topk rather than numpy.argsort, as it's more efficient
-        topk = torch.topk(prob, k, dim=-1, largest=True, sorted=True)
+        ##>>>> param check
+        if ori_imshapes is not None and len(ori_imshapes) != x.shape[0]:
+            raise Exception(f"ori_imshapes must be None or of shape (bs, 2+), but got {ori_imshapes}")
+            
+        ##>>>> forward pass
+        raw_preds = self.forward(x)
         
-        ##>>>> convert to labels
-        if label_mappings is None:
-            label_mappings = self._label_mappings
+        ##>>>> nms
+        ## NOTE: out type: list(torch.tensor((n, 6))]), of shape: (bs, n, 6), 6 is of form [xyxy, conf, cls]
+        preds = non_max_suppression(raw_preds, 
+                                    conf_thres,
+                                    iou_thres,
+                                #    max_det=300, ## use default val
+                                    )
         
-        ## output: (batch_size, k, x) format
-        labels = []
-        for i, idxs in enumerate(topk.indices): ## the first dim of topk.indices will be the batch
-            cur_topk_labels = []
-            for k in idxs:
-                conf = float(prob[i, k])
-                ori_label = self.model.names[int(k)]
-                remapped_label = label_mappings[ori_label] if label_mappings is not None and ori_label in label_mappings else ori_label
-                cur_topk_labels.append((remapped_label, conf, ori_label))
-                
-            labels.append(cur_topk_labels)
+        ##>>>> convert to fiftyone format
+        ## mainly [<top-left-x>, <top-left-y>, <width>, <height>], with  box coordinates as floats in [0, 1] relative to the dimensions of the image. 
+        ## refer to [Docs > FiftyOne User Guide > Using FiftyOne Datasets > Object detection](https://docs.voxel51.com/user_guide/using_datasets.html#object-detection) for detail format
+        ori_imshapes = ori_imshapes if ori_imshapes is not None else [x.shape[2:]] * x.shape[0]
+        for pred, ori_imshape in zip(preds, ori_imshapes):
+            if pred is None or pred.shape[0] == 0: ## nil pred, keep not changed
+                continue
             
-        labels = np.asarray(labels) ## convert to numpy array
+            ##>>>> rescale the box to original image size
+            pred[:, :4] = scale_boxes(x.shape[2:], pred[:, :4], ori_imshape).round() ## still in xyxy
+            
+            ##>>>> normalize the boxes to [0, 1]
+            gn = torch.tensor(ori_imshape)[[1, 0, 1, 0]]  # normalization gain whwh
+            
+            ## NOTE: tlwh means top-left corner and wh, tlwhn means normalized tlwh according to original imgsize;
+            pred[:, :4] = (xyxy2tlwh(torch.tensor(pred[:, :4]).view(-1, 4)) / gn)  # normalized tlwhn
         
-        return labels
     
-    def predict(self, x):
-        """ predict
-        """
-        return self.forward(x)
+        ##>>>> now just return the preds, not in fiftyone format
+        ## NOTE: output shape will be of shape (bs, nboxs, 6), of type list(torch.Tensor), each tensor of shape (nboxs, 6), 6 is of form [xywhn, conf, cls]
+        return preds
     
-    def predict_all(self, x):
-        """ predict all
-        """
-        return self.predict(x)
-    
-    @property
-    def has_embeddings(self):
-        return True
-    
-    @property
-    def has_logits(self):
-        return True
-    
-    def embed(self, x):
-        """ forward pass
-        NOTE: to support embeddings, logits, etc
-        """
-        with torch.no_grad():
-            x = x.to(self.device)
-            
-            ##>>>> features
-            features = self._backbone(x)
-            
-            ##>>>> embeddings
-            ## note: for us, we only take 1 layer output, so different from yolo implementation
-            embeddings = nn.functional.adaptive_avg_pool2d(features, (1, 1)).squeeze(-1).squeeze(-1)  # flatten
-            
-            ## note: fiftyone requires a return of numpy array, not a list, so directly convert to numpy and not reduce the first dims
-            ## refer to https://docs.voxel51.com/api/fiftyone.core.models.html#fiftyone.core.models.EmbeddingsMixin.embed and https://docs.voxel51.com/api/fiftyone.core.models.html#fiftyone.core.models.EmbeddingsMixin.embed_all for detail
-            # embeddings_unbind = torch.unbind(embeddings.to('cpu'), dim=0) ## convert to tuple or list of each batch.
-            # embeddings_unbind = [embeddings.cpu().numpy() for embeddings in embeddings_unbind]
-            embeddings = embeddings.cpu().numpy()
-            
-            
-        return embeddings
-    
-    def embed_all(self, x):
-        """ embed
-        """
-        return self.embed(x)
+    def preds_to_fodetectionslist(self, preds: list, label_mappings:dict=None):
+        """ convert preds to fo detections class
 
-
+        Args:
+            preds (list): list of tensor, each tensor will be batch_size * [xywhn, conf, classid]
+            label_mappings (dict, optional): _description_. Defaults to None.
+        """
+        ##>>>> update class name dict
+        ## use class level label_mappings if not specified
+        label_mappings = label_mappings if label_mappings is not None else self._label_mappings
+        
+        names_dict = self._model.names.copy() ## the basic dict
+        if label_mappings is not None:
+            names_dict = {class_id: class_name if label_mappings is None or class_name not in label_mappings else label_mappings[class_name] for class_id, class_name in names_dict.items() }
+            
+        ##>>>> convert to fiftyone class
+        fo_detections_list = []
+            
+        for pred in preds:
+            if pred is None or pred.shape[0] == 0:
+                fo_detections_list.append(fo.Detections(detections=[]))
+                continue
+            
+            pred = pred.cpu().numpy() ## make sure in cpu
+            
+            ##>>>> convert to fiftyone class
+            tlwhn_boxes = pred[:, :4].tolist()
+            confs = pred[:, 4].tolist()
+            classids = np.asarry(pred[:, 5], int).tolist()
+            
+            labels = [names_dict[classid] for classid in classids]
+            
+            detections = [fo.Detection(label=label, bounding_box=box, confidence=conf) for label, box, conf in zip(labels, tlwhn_boxes, confs)]
+            
+            fo_detections_list.append(fo.Detections(detections=detections))
+            
+        return fo_detections_list
+    
 class BatchDataLoader:
-    def __init__(self, dataset, batch_size=16, img_size=224, transforms=None) -> None:
+    def __init__(self, dataset, batch_size=64, img_size=640, transforms=None) -> None:
+        """ batch data loader for yolov5 model 
+        @Notes:
+            better to specify the `transform` explicitly, since it's not always the same as the model's default transform
+        """
+        ##>>>> param setup
+        ## to make code clear, ensure the transforms are set outside
+        if transforms is None:
+            raise Exception("required param `transforms` can not be None, MUST be specified")
         
-        self.dataset = dataset
+        if not isinstance(dataset, (fo.Dataset, fo.DatasetView)):
+            raise Exception(f"dataset must be of type `fiftyone.core.dataset.Dataset` or `fiftyone.core.dataset.DatasetView`, but got {type(dataset)}")
+        
+        if not dataset.has_field("filepath"):
+            raise Exception(f"dataset must have field `filepath`, but got {dataset.get_field_schema()}")
+        
+        if not dataset.has_field("id"):
+            raise Exception(f"dataset must have field `id`, but got {dataset.get_field_schema()}")
+        
+        ##>>>> basic setup
+        ## NOTE: for batch loader, only need the id and filepath
+        self.dataset = dataset.select_fields("id", "filepath")
         self.batch_size = batch_size
         self.count = 0
         self.nf = len(self.dataset) ## number of files
@@ -221,52 +273,43 @@ class BatchDataLoader:
             raise StopIteration
         
         ##>>>> batching the data
-        images, paths = [], []
+        images, paths, ori_imshapes, sampleids = [], [], [], []
         for i in range(self.batch_size):
-            cur_imfile = self.dataset[self.count]
-            path, im, *_ = self._get_image(cur_imfile)
+            ## NOTE: maybe more efficient only select the required fields
+            cur_sample = self.dataset[self.count]
+            cur_imfile = cur_sample.filepath
+            path, im, im0, *_ = self._get_image(cur_imfile)
             self.count += 1
             
             images.append(im)
             paths.append(path)
+            ## avoid passing the whold original image, just the shape
+            ori_imshapes.append(im0.shape) ## NOTE: shape will be (h, w, c), not imgsize(w, h)
+            sampleids.append(cur_sample.id)
             
             if len(images) < self.batch_size and self.count < self.nf:
                 continue
             
             ##>>>> expand the batch dim for images
             image_tensor = torch.stack(images, 0)
-            return image_tensor, paths
+            return image_tensor, paths, ori_imshapes, sampleids
             
         image_tensor = torch.stack(images, 0)
-        return images, paths
+        return images, paths, ori_imshapes, sampleids
     
     def _get_image(self, img_path:str):
         im0 = cv2.imread(img_path)  # BGR
         assert im0 is not None, f"Image Not Found {img_path}"
         s = f"image {self.count}/{self.nf} {img_path}: "
         
-        if self.transforms:
-            im = self.transforms(im0)  # transforms
-        else:
-            im = letterbox(im0, self.img_size, 1, auto=True)[0]  # padded resize
-            im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
-            im = np.ascontiguousarray(im)  # contiguous
+        im = self.transforms(im0)  # transforms
+        # if self.transforms:
+        # else:
+        #     im = letterbox(im0, self.img_size, 1, auto=True)[0]  # padded resize
+        #     im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+        #     im = np.ascontiguousarray(im)  # contiguous
             
         return img_path, im, im0, None, s
-
-# Function to recursively gather all image paths
-def glob(
-    root_dir,
-    extensions={".jpg", ".jpeg", ".png", ".bmp", ".tiff"},
-):
-    """act as a list of list of image paths, each list is a chunk of image paths
-    NOTE: support gater by chunk_size to avoid too many files in memory"""
-    image_paths = []
-    for root, _, files in os.walk(root_dir):
-        for file in files:
-            if file.lower().endswith(tuple(extensions)):
-                image_paths.append(os.path.join(root, file))
-    return image_paths
 
 ##-----------------------------------------------
 ##---- workflows
@@ -274,145 +317,96 @@ def compute_labels(dataset: Union[fo.Dataset, fo.DatasetView],
                    model: nn.modules, 
                    label_field:str=None,
                    batch_size:int=64, 
-                   chunk_size:int = 3200,
                    img_size:int=640,
                    label_mappings:dict=None,
-                   tag = None):
+                   tag = None,
+                   conf_thres=0.25,
+                   iou_thres=0.45):
     """ support batch computing for convenience 
     @Args:
         `batch_size`: the batch_size for the model to do each prediction, decided by available GPU mem
         `chunk_size`: decided by available CPU mem, indicates how frequently to update the dataset
         `tag`: whether to append specified tag to those samples / labels?
     """
+    ##>>>> set field schema for the new label field
     if label_field is None:
         raise Exception("required param `label_field` can not be None, MUST be specified")
     
-    chunk_size = int(np.ceil(chunk_size / batch_size)) * batch_size ## make chunk_size dividable by batch_size
+    ## temp annotated since `add_sample_field` may only exist in `Dataset` but not in `DatasetView`
+    # if label_field not in dataset.get_field_schema():
+    #     dataset.add_sample_field(
+    #         label_field, ## format as "{family}-{genus_c}-{species_c}"
+    #         fo.EmbeddedDocumentField,
+    #         embedded_doc_type=fo.Detections,
+    #     )
+    
     print((
         f"inference cfg ==>\n"
         f"save to label field: {label_field}, batch_size: {batch_size}, append tag: {tag}\n"
-        f"with rectified_chunk_size / total: {chunk_size}/{len(dataset)}.\n"
+        f"with rectified_chunk_size / total: {batch_size}/{len(dataset)}.\n"
         # f"classes:{classes}"
     ))
     
-    ##>>>> predict the results
-    with fo.ProgressBar() as pb:
-        for step in pb(range(0, dataset.count(), chunk_size)):
-            ## for each chunk
-            chunk_view = dataset[step: step+chunk_size]
-            
-            chunk_filepaths = chunk_view.values("filepath")
-            chunk_dl = trainval_dl.test_dl(chunk_filepaths, bs=bs)
-            
-            # Perform inference
-            chunk_preds, _ = fastai_learner.get_preds(dl=chunk_dl)
-            if chunk_preds is None:
-                print("chunk_preds is None for chunk: {}:{}".format(step, step+chunk_size))
-                continue
-                
-            chunk_preds = chunk_preds.numpy()
-
-            ##>>>> save back to fiftyone
-            for sample, scores, fastai_filepath in zip(
-                chunk_view.select_fields(["id", "filepath"]).iter_samples(autosave=True, progress=True),
-                chunk_preds,
-                chunk_dl.items
-            ):
-                if sample["filepath"] != fastai_filepath:
-                    print("potential error, fiftyone filepath {} not eq fastai filepath {}".format(sample["filepath"], fastai_filepath))
-                    continue
-                    
-                target = np.argmax(scores)
-                sample[save_to_label] = fo.Classification(
-                    label=classes[target],
-                    confidence=scores[target],
-                    logits=np.log(scores),
-                )
-                if tag is not None:
-                    sample.tags.append(tag)
-
+    ##>>>> model setup
+    model.eval() ## duplicate but ensure val mode
+    model.warmup((batch_size, 3, img_size, img_size))
+    
+    ##>>>> setup dataset
+    det_tfm = DetectionTransform(img_size=img_size, stride=model.stride)
+    
+    dataloader = BatchDataLoader(
+        dataset=dataset, 
+        batch_size=batch_size, 
+        img_size=img_size, 
+        transforms=det_tfm, ## for detection now, same as ultralytics default transform
+    )
+    
+    ##>>>> action loop
+    ## NOTE: ims will be tensor with shape (batch_size, c, h, w)
+    ## and better exeute in batch mode in this functions
+    for imgs, paths, ori_imshapes, sampleids in tqdm.tqdm(dataloader, total=len(dataloader), desc="batch computing labels"):
+        
+        ##>>>> predict; output is list of tensors, each tensor for each image
+        preds = model.predict(imgs, conf_thres=conf_thres, iou_thres=iou_thres, ori_imshapes=ori_imshapes)
+        
+        fo_detections_list = model.preds_to_fodetectionslist(preds, label_mappings=label_mappings, tag=tag)
+        
+        ##>>>> batch update the dataset
+        batch_view = dataset.select(sample_ids=sampleids)
+        
+        values = {sampleid: fo_detections for sampleid, fo_detections in zip(sampleids, fo_detections_list) }
+        
+        ## maybe more efficient by `id` than by `filepath``
+        batch_view.set_values(field_name= label_field, values=values, key_file="id")
+        
+       
+    ##>>>> workon the whole dataset
+    dataset.save() ## ensure save
     print("job done!")
-    
-    pass
-    
-
-
-##---- xxxx --------------------- bakup workflows
-def compute_labels(image_paths:str, model, batch_size:int=16, img_size:int=224, topk:int = 1, label_mappings:dict=None):
-    """ support batch computing for convenience """
-    ##>>>> dataset / data source
-    if isinstance(image_paths, str) and os.path.isdir(image_paths):
-        image_paths = glob(image_paths)
-    
-    ##>>>> dataloader
-    dataloader = BatchDataLoader(
-        dataset=image_paths, 
-        batch_size=batch_size, 
-        img_size=img_size, 
-        transforms=classify_transforms(img_size)
-    )
-    
-    ##>>>> model setup
-    model.eval() ## duplicate but ensure val mode
-    model.warmup()
-    
-    ##>>>> action loop
-    results = []
-    for imgs, paths in tqdm.tqdm(dataloader, total=len(dataloader), desc="batch:"):
-        with torch.no_grad():
-            logits = model.predict(imgs)
-            labels = model.logits_to_labels(logits, k=topk, label_mappings=label_mappings)
-            
-            ##>>>> log the results
-            for path, label, logit in zip(paths, labels, logits):
-                results.append((path, label, logit.cpu().numpy()))
-                # print(f"image: {path}, label: {label}")
-               
-    ##>>>> post processing
-    return results
-
-def compute_embeddings(image_paths:str, model, batch_size:int=16, img_size:int=224):
-    """ support batch computing for convenience """
-    ##>>>> dataset / data source
-    if isinstance(image_paths, str) and os.path.isdir(image_paths):
-        image_paths = glob(image_paths)
-    
-    ##>>>> dataloader
-    dataloader = BatchDataLoader(
-        dataset=image_paths, 
-        batch_size=batch_size, 
-        img_size=img_size, 
-        transforms=classify_transforms(img_size)
-    )
-    
-    ##>>>> model setup
-    model.eval() ## duplicate but ensure val mode
-    model.warmup()
-    
-    ##>>>> action loop
-    results = []
-    for imgs, paths in tqdm.tqdm(dataloader, total=len(dataloader), desc="batch:"):
-        with torch.no_grad():
-            embeddings = model.embed(imgs)
-            
-            results.append(embeddings)
-            
-    ##>>>> post processing
-    results = np.concatenate(results, axis=0) ## concat along the first dim
-    return results
+    return
 
 def create_argparser():
     """ make the argument parser for this script 
     NOTE:
         make it a function, so that it can be used in other scripts, eg., notebooks
     """
-    parser = argparse.ArgumentParser(description="Wrap yolo classification model into fiftyone usage")
+    parser = argparse.ArgumentParser(description="Wrap yolo detection model into fiftyone usage")
+    
+    ##>>>> fiftyone setup
     parser.add_argument(
-        "--data",
+        "--fiftyone_dsname",
         type=str,
-        default="../datasets/mnist",
-        help="dataset dir",
+        choices=fo.list_datasets(),
+        help="the dataset name in fiftyone",
     )
+    parser.add_argument(
+        "--label_field",
+        type=str,
+        default="my_detections",
+        help="the field to put detection results",
+    )
+    
+    ##>>>> model setup
     parser.add_argument(
         "--weights",
         type=str,
@@ -420,15 +414,9 @@ def create_argparser():
         help="model.pt path(s)",
     )
     parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=128,
-        help="batch size",
-    )
-    parser.add_argument(
         "--imgsz",
-        type=int,
-        default=224,
+        type=int, ## temp NOT convert to tuple
+        default=640,
         help="inference size (pixels)",
     )
     parser.add_argument(
@@ -437,128 +425,62 @@ def create_argparser():
         default="",
         help="cuda device, i.e. 0 or 0,1,2,3 or cpu",
     )
+    
+    ##>>>> other setup
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=32,
+        help="batch size",
+    )
+    parser.add_argument(
+        "--conf_thres",
+        type=float,
+        default=0.25,
+        help="conf threshold for detection nms",
+    )
+    parser.add_argument(
+        "--iou_thres",
+        type=float,
+        default=0.45,
+        help="iou threshold for detection nms",
+    )
     return parser
 
 ##-----------------------------------------------
 ##---- unit_test
-def unit_test_batch_predict():
-    """ unit test: compare with yolov5 predict
-    
-    NOTE: refer to `data/ImageNet10.yaml` for datadownloading and class names etc
-    """
-    work_dir = os.path.dirname(__file__)
-    ##>>>> basic setup
-    data_source_dir = os.path.join(work_dir, "../../datasets/imagenet10")
-    weights = os.path.join(work_dir, "../data/weights/efficientnet_b0.pt")
-    
-    model_test = ClassificationModelWrapper(weights)
-    
-    imgsz = (224, 224)
-    batch_size = 16
-    topk = 5
-    
-    label_mappings = {class_label: f"remap_{class_label}" for class_id, class_label in model_test.model.names.items()}
-    
-    results = compute_labels(
-        image_paths=data_source_dir, 
-        model=model_test, 
-        batch_size=batch_size, 
-        img_size=imgsz[0],
-        topk=topk,
-        label_mappings=label_mappings,
-        )
-    
-    embeddings = compute_embeddings(
-        image_paths=data_source_dir, 
-        model=model_test, 
-        batch_size=batch_size, 
-        img_size=imgsz[0],
-        )
-    
-    pass
-
-def unit_test_cmp_with_yolov5_predict():
-    """ unit test: compare with yolov5 predict
-    
-    NOTE: refer to `data/ImageNet10.yaml` for datadownloading and class names etc
-    """
-    work_dir = os.path.dirname(__file__)
-    ##>>>> basic setup
-    imgsz = (224, 224)
-    data_source_dir = os.path.join(work_dir, "../../datasets/imagenet10/train")
-    dataset = LoadImages(data_source_dir, img_size=imgsz, transforms=classify_transforms(imgsz[0]))
-    
-    weights = os.path.join(work_dir, "../data/weights/efficientnet_b0.pt")
-    
-    device = select_device()
-    model_bench = DetectMultiBackend(weights, device=device)
-    model_test = ClassificationModelWrapper(weights)
-    
-    batch_size = 1
-    model_bench.eval()
-    model_bench.warmup()
-    model_test.warmup()
-    
-    ##>>>> model warmup
-    topk = 5
-    ## note: in batch_size==1 case, note there's no batching right now
-    for path, im, im0s, vid_cap, s in dataset:
-        ##>>>> get bench result
-        im_bench = torch.Tensor(im).to(model_bench.device)
-        im_bench = im_bench.float()  # uint8 to fp16/32
-        if len(im_bench.shape) == 3:
-            im_bench = im_bench[None]  # expand for batch dim
-            
-        ## get bench
-        with torch.no_grad():
-            results_bench = model_bench(im_bench)
-            
-        results_bench = results_bench.cpu()
-        pred_bench = F.softmax(results_bench, dim=1)  # probabilities
-    
-        ##>>> get test result
-        im_test = torch.Tensor(im).to(model_test.device)
-        im_test = im_test.float()  # uint8 to fp16/32
-        if len(im_test.shape) == 3:
-            im_test = im_test[None]  # expand for batch dim
-            
-        logit_test = model_test(im_test)
-        ## our result present in a ndarray of shape(batch_size, k, x) format
-        pred_test = model_test.logits_to_labels(logit_test, k=topk)
-            
-        ##>>>> check and verify, they are in same batch_size
-        ## topk if neccessary
-        # Process predictions
-        for i in range(batch_size):  # per image
-            logits_bench = results_bench[i]
-            prob_bench = pred_bench[i]
-            topk_bench = prob_bench.argsort(0, descending=True)[:topk].tolist()  # top 5 
-            
-            ## convert the topk results to [(label, conf, logit, ...), ...] format
-            final_bench = np.asarray([(model_bench.names[k], float(prob_bench[k]), float(logits_bench[k])) for k in topk_bench])
-            
-            ## for our model, the result is already in pred_test
-            final_test = pred_test[i]
-            
-            ##>>>> compare the results
-            label_diff = np.argwhere(final_bench[::, 0] != final_test[::, 0])
-            conf_diff = np.argwhere(~np.isclose(final_bench[::, 1].astype(float), final_test[::, 1].astype(float)))
-            logic_diff = np.argwhere(~np.isclose(final_bench[::, 2].astype(float), final_test[::, 2].astype(float)))
-            
-            fail_index = set(np.concatenate([label_diff, conf_diff, logic_diff], axis=0))
-            
-            ss = "PASS" if len(fail_index) == 0 else "FAIL"
-            print(f"status:{ss}, image: {os.path.basename(path)}, fail_index: {fail_index}")
-            pass
-    
-    pass
 
 ##-----------------------------------------------
 ##---- main
 if __name__ == "__main__":
     ##>>>> parse args
-    # unit_test_cmp_with_yolov5_predict()
+    parser = create_argparser()
+    args = parser.parse_args()
     
-    unit_test_batch_predict()
+    ##>>>> dataset
+    if args.fiftyone_dsname not in fo.list_datasets():
+        raise Exception(f"bad dataset name, not in fiftyone datasets, available datasets are: {fo.list_datasets()}")
+    
+    dataset = fo.load_dataset(args.fiftyone_dsname).take(70, seed=5151) ## for test
+    
+    label_mappings = None if "det_label_mapping" not in dataset.info else dataset.info["det_label_mapping"]
+    print(f"label mappings: {label_mappings}, dataset detail:\n{dataset} ")
+    
+    ##>>>> model workflow
+    model = DetectionModelWrapper(
+        weights=args.weights,
+        device=args.device,
+        label_mappings=label_mappings,
+    )
+    
+    compute_labels(
+        dataset=dataset,
+        model=model,
+        label_field=args.label_field,
+        batch_size=args.batch_size,
+        img_size=args.imgsz,
+        conf_thres=args.conf_thres,
+        iou_thres=args.iou_thres,
+    )
     
     pass
