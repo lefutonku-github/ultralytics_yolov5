@@ -71,7 +71,7 @@ class DetectionTransform:
         
         ## NOTE: `torch.ToTensor()` directly transform np.ndarray y (H x W x C) in the range [0, 255] to a torch.FloatTensor of shape (C x H x W) in the range [0.0, 1.0] if the numpy.ndarray has dtype = np.uint8
         ## since we already transpose the image, so no need to use `torch.ToTensor()` here
-        im = torch.from_numpy(im)
+        im = torch.from_numpy(im).float()
         im /= 255  # 0 - 255 to 0.0 - 1.0
         return im
     
@@ -122,13 +122,10 @@ class DetectionModelWrapper(nn.Module):
     
         return
     
-    def warmup(self, imgsz=(640, 640)): ## default imgsz
+    def warmup(self, imgsz=(1, 3, 640, 640)): ## default imgsz
         """ warmup the model
         """
-        assert isinstance(imgsz, tuple) and len(imgsz) == 2, f"imgsz must be a tuple of 2, but got {imgsz}"
-        
-        warmup_imgsz = (1, 3, *imgsz)
-        self._model.warmup(warmup_imgsz)
+        self._model.warmup(imgsz)
         return
     
     def forward(self, x):
@@ -140,6 +137,10 @@ class DetectionModelWrapper(nn.Module):
             preds = self._model(x)
             
         return preds
+    
+    @property
+    def stride(self):
+        return self._model.stride
     
     def predict(self, x, conf_thres=0.25, iou_thres=0.45, ori_imshapes:np.ndarray=None):
         """ when wrapped by this model , not only simple forward pass, but also post processing, lik nms, xyxy to xywhn etc
@@ -269,33 +270,23 @@ class BatchDataLoader:
     def __next__(self):
         """Advances to the next file in the dataset, raising StopIteration if at the end."""
         ##>>>> backup
-        if self.count == self.nf:
+        if self.count >= self.nf:
             raise StopIteration
         
         ##>>>> batching the data
         images, paths, ori_imshapes, sampleids = [], [], [], []
-        for i in range(self.batch_size):
-            ## NOTE: maybe more efficient only select the required fields
-            cur_sample = self.dataset[self.count]
-            cur_imfile = cur_sample.filepath
-            path, im, im0, *_ = self._get_image(cur_imfile)
-            self.count += 1
-            
+        batch_view = self.dataset[self.count: self.count + self.batch_size]
+        paths = batch_view.values("filepath")
+        sampleids = batch_view.values("id")
+        for path in paths:
+            path, im, im0, *_ = self._get_image(path)
             images.append(im)
-            paths.append(path)
-            ## avoid passing the whold original image, just the shape
-            ori_imshapes.append(im0.shape) ## NOTE: shape will be (h, w, c), not imgsize(w, h)
-            sampleids.append(cur_sample.id)
+            ori_imshapes.append(im0.shape)
             
-            if len(images) < self.batch_size and self.count < self.nf:
-                continue
-            
-            ##>>>> expand the batch dim for images
-            image_tensor = torch.stack(images, 0)
-            return image_tensor, paths, ori_imshapes, sampleids
-            
+        self.count += len(paths) ## update this count
+        
         image_tensor = torch.stack(images, 0)
-        return images, paths, ori_imshapes, sampleids
+        return image_tensor, paths, ori_imshapes, sampleids
     
     def _get_image(self, img_path:str):
         im0 = cv2.imread(img_path)  # BGR
