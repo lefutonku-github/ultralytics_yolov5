@@ -70,8 +70,10 @@ def compute_labels(dataset: Union[fo.Dataset, fo.DatasetView],
                    conf_thres=0.25,
                    iou_thres=0.45,
                    work_dir=os.getcwd(),
-                   device="gpu:0", ## prefer gpu
-                   keep_temp=False):
+                   device="cuda:0", ## prefer gpu
+                   keep_temp=False,
+                   keep_old_label_values=False,
+                   ):
     """ although in v1, we still provide the same syntax of `compute_labels` for future compatibility
     
     @Args:
@@ -101,7 +103,7 @@ def compute_labels(dataset: Union[fo.Dataset, fo.DatasetView],
         print(f"create workdir: {timed_work_dir}")
         
     ##>>>> temp load model for reading names
-    temp_model = DetectMultiBackend(weights, device=select_device("cpu")) ## only used for reading names
+    temp_model = DetectMultiBackend(weights, device=select_device(device=device)) ## only used for reading names
     names_dict = temp_model.names.copy() ## the basic dict
     
     if label_mappings is not None:
@@ -159,6 +161,9 @@ def compute_labels(dataset: Union[fo.Dataset, fo.DatasetView],
     
     ##>>>> using `add_yolo_labels` to load offline results
     ## refer to [`add_yolo_labels`](https://docs.voxel51.com/api/fiftyone.utils.yolo.html#fiftyone.utils.yolo.add_yolo_labels) for more detail
+    if not keep_old_label_values and label_field in dataset.get_field_schema():
+        dataset.clear_sample_field(label_field)
+        
     # And add model predictions
     fouy.add_yolo_labels(
         dataset,
@@ -186,6 +191,12 @@ def create_argparser():
         "--fiftyone_dsname",
         type=str,
         choices=fo.list_datasets(),
+        help="the dataset name in fiftyone",
+    )
+    parser.add_argument(
+        "--fiftyone_viewname",
+        type=str,
+        default=None,
         help="the dataset name in fiftyone",
     )
     parser.add_argument(
@@ -231,6 +242,15 @@ def create_argparser():
     parser.add_argument(
         "--keep_temp", nargs="?", default=False, const=True, help="clear intermediate results"
     )
+    parser.add_argument(
+        "--keep_old_label_values", nargs="?", default=False, const=True, help="whether keep original values in label_field, by default False! "
+    )
+    parser.add_argument(
+        "--work_dir",
+        type=str,
+        required=True,
+        help="where to put the temp results",
+    )
     return parser
 
 ##-----------------------------------------------
@@ -247,14 +267,21 @@ if __name__ == "__main__":
     if args.fiftyone_dsname not in fo.list_datasets():
         raise Exception(f"bad dataset name, not in fiftyone datasets, available datasets are: {fo.list_datasets()}")
     
-    dataset = fo.load_dataset(args.fiftyone_dsname).take(70, seed=5151) ## for test
-    
+    dataset = fo.load_dataset(args.fiftyone_dsname)
     label_mappings = None if "det_label_mapping" not in dataset.info else dataset.info["det_label_mapping"]
     print(f"label mappings: {label_mappings}, dataset detail:\n{dataset} ")
     
+    if args.fiftyone_viewname is not None:
+        if args.fiftyone_viewname not in dataset.list_saved_views():
+            raise Exception(f"bad view name, not in fiftyone views, available views are: {dataset.list_saved_views()}")
+        
+        view = dataset.load_saved_view(args.fiftyone_viewname)
+    else:
+        view = dataset
+    
     ##>>>> model workflow
     compute_labels(
-        dataset=dataset,
+        dataset=view,
         weights=args.weights,
         label_field=args.label_field,
         img_size=args.imgsz,
@@ -263,6 +290,8 @@ if __name__ == "__main__":
         iou_thres=args.iou_thres,
         device=args.device,
         keep_temp=args.keep_temp,
+        keep_old_label_values=args.keep_old_label_values,
+        work_dir=args.work_dir,
     )
     
     pass
