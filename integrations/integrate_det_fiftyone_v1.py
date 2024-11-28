@@ -195,7 +195,7 @@ def create_argparser():
     )
     parser.add_argument(
         "--fiftyone_viewname",
-        type=str,
+        type=lambda ss: ss if ss is not None and ss.lower() not in {"nil", "null", "none"} else None,
         default=None,
         help="the dataset name in fiftyone",
     )
