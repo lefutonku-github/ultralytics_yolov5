@@ -137,6 +137,41 @@ BOX_COLORS = [_hex2bgr(h) for h in _HEXS]
 # ---------------------------------------------------------------
 # ---- composite: draw detection boxes + cls labels on one image
 
+def _adaptive_font_size(im: np.ndarray) -> int:
+    """Return an appropriate font size based on the image's long side.
+
+    Reference point: long_side = 1280 → font_size = 26.
+
+    Segmented adaptive table
+    ------------------------
+    long_side  <  320  → 12
+    320  ≤ long_side < 480   → 14
+    480  ≤ long_side < 640   → 16
+    640  ≤ long_side < 960   → 20
+    960  ≤ long_side < 1280  → 24
+    1280 ≤ long_side < 1920  → 26
+    1920 ≤ long_side < 2560  → 34
+    2560 ≤ long_side         → 44
+    """
+    long_side = max(im.shape[:2])
+    if long_side < 320:
+        return 12
+    elif long_side < 480:
+        return 14
+    elif long_side < 640:
+        return 16
+    elif long_side < 960:
+        return 20
+    elif long_side < 1280:
+        return 24
+    elif long_side < 1920:
+        return 26
+    elif long_side < 2560:
+        return 34
+    else:
+        return 44
+
+
 def draw_detcls_result(
     im_bgr: np.ndarray,
     det_boxes_xyxy: np.ndarray,
@@ -145,8 +180,8 @@ def draw_detcls_result(
     cls_labels: list,
     cls_confs: list,
     det_classnames: list,
-    font_size: int = 26,
-    box_thickness: int = 2,
+    font_size: int = None,
+    box_thickness: int = None,
     bg_color: tuple  = (180, 60, 0),
     text_color: tuple = (255, 255, 255),
     label_padding: int = 4,
@@ -168,8 +203,11 @@ def draw_detcls_result(
                          (already remapped / Chinese).
         cls_confs:       List of N top-1 classification confidences (float).
         det_classnames:  Detection class name list indexed by *det_classids*.
-        font_size:       Badge font size.
-        box_thickness:   Detection box line thickness.
+        font_size:       Badge font size.  If ``None`` (default), auto-selected
+                         by ``_adaptive_font_size()`` based on image dimensions.
+        box_thickness:   Detection box line thickness.  If ``None``, auto-scaled
+                         so it is roughly proportional to the image size
+                         (long_side / 640, clamped to [1, 4]).
         bg_color:        Badge background colour (BGR).
         text_color:      Badge text colour (BGR).
         label_padding:   Inner badge padding (px).
@@ -178,6 +216,14 @@ def draw_detcls_result(
         New BGR ``np.ndarray`` with all annotations drawn.
     """
     im = im_bgr.copy()
+
+    # ---- auto-adapt font_size and box_thickness if not supplied
+    if font_size is None:
+        font_size = _adaptive_font_size(im)
+    if box_thickness is None:
+        long_side = max(im.shape[:2])
+        box_thickness = max(1, min(4, int(round(long_side / 640))))
+
     label_h_approx = font_size + label_padding * 2 + 4  # badge height estimate
 
     for i, (box, cid, dconf) in enumerate(

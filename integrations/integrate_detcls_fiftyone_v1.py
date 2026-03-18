@@ -527,15 +527,16 @@ def run_detcls(
 
         ##>>>> per-image post-processing
         for path, pred, ori_shape in zip(batch_paths, det_preds, batch_ori_shapes):
-            im0 = load_image(path)  # reload original for drawing
+            im0 = load_image(path)  # reload original
             if im0 is None:
                 continue
 
+            ##>>>> unpack detection results in original-image coords
             boxes, confs, classids, det_labels = convert_det_labels(
                 pred, det_classnames
             )
 
-            ##>>>> classification on crops
+            ##>>>> classification on crops from the ORIGINAL image / coords
             cls_results_per_box = []
             if len(boxes) > 0:
                 n_detected += 1
@@ -543,23 +544,31 @@ def run_detcls(
                 cls_results_per_box = infer_cls_on_crops(cls_model, crops, topk=topk)
 
             ##>>>> build top-1 label lists for drawing
-            cls_top1_labels = [
-                r[0][0] for r in cls_results_per_box
-            ]  # remapped label
-            cls_top1_confs  = [
-                r[0][1] for r in cls_results_per_box
-            ]
+            cls_top1_labels = [r[0][0] for r in cls_results_per_box]  # remapped label
+            cls_top1_confs  = [r[0][1] for r in cls_results_per_box]
 
-            ##>>>> draw
+            ##>>>> resize to output size BEFORE drawing
+            im_vis = resize_for_output(im0, long_side=output_long_side)
+
+            ##>>>> scale boxes from original coords → resized coords for drawing
+            if len(boxes) > 0:
+                scale_x = im_vis.shape[1] / im0.shape[1]
+                scale_y = im_vis.shape[0] / im0.shape[0]
+                boxes_vis = boxes.copy()
+                boxes_vis[:, 0] *= scale_x
+                boxes_vis[:, 2] *= scale_x
+                boxes_vis[:, 1] *= scale_y
+                boxes_vis[:, 3] *= scale_y
+            else:
+                boxes_vis = boxes
+
+            ##>>>> draw on the resized image
             vis = draw_detcls_result(
-                im0,
-                boxes, classids, confs,
+                im_vis,
+                boxes_vis, classids, confs,
                 cls_top1_labels, cls_top1_confs,
                 det_classnames,
             )
-
-            ##>>>> resize output
-            vis = resize_for_output(vis, long_side=output_long_side)
 
             ##>>>> save
             dst = os.path.join(output_dir, os.path.basename(path))
