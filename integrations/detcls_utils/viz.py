@@ -172,6 +172,10 @@ def _adaptive_font_size(im: np.ndarray) -> int:
         return 44
 
 
+# Sky-blue in BGR: #87CEEB → RGB(135, 206, 235) → BGR(235, 206, 135)
+SKY_BLUE_BGR = (235, 206, 135)
+
+
 def draw_detcls_result(
     im_bgr: np.ndarray,
     det_boxes_xyxy: np.ndarray,
@@ -182,16 +186,16 @@ def draw_detcls_result(
     det_classnames: list,
     font_size: int = None,
     box_thickness: int = None,
-    bg_color: tuple  = (180, 60, 0),
-    text_color: tuple = (255, 255, 255),
+    box_color: tuple   = SKY_BLUE_BGR,
+    bg_color: tuple    = SKY_BLUE_BGR,
+    text_color: tuple  = (255, 255, 255),
     label_padding: int = 4,
 ) -> np.ndarray:
     """Render detection bounding boxes and classification labels onto an image.
 
-    Follows the same visual style as ``sim_inference_onboard.py /
-    show_result_image()``:
-      * coloured detection box per det-class
-      * blue-bg / white-text badge with ``<cls_label>-<cls_conf>``
+    Visual style:
+      * sky-blue detection box (uniform colour for all classes by default)
+      * sky-blue-bg / white-text badge with ``<cls_label>-<cls_conf>``
         positioned just above the detection box
 
     Args:
@@ -208,7 +212,8 @@ def draw_detcls_result(
         box_thickness:   Detection box line thickness.  If ``None``, auto-scaled
                          so it is roughly proportional to the image size
                          (long_side / 640, clamped to [1, 4]).
-        bg_color:        Badge background colour (BGR).
+        box_color:       Detection box colour (BGR).  Defaults to sky blue.
+        bg_color:        Badge background colour (BGR).  Defaults to sky blue.
         text_color:      Badge text colour (BGR).
         label_padding:   Inner badge padding (px).
 
@@ -233,8 +238,7 @@ def draw_detcls_result(
         cid = int(cid)
 
         ##>>>> detection box
-        color = BOX_COLORS[cid % len(BOX_COLORS)]
-        cv2.rectangle(im, (x1, y1), (x2, y2), color,
+        cv2.rectangle(im, (x1, y1), (x2, y2), box_color,
                       thickness=box_thickness, lineType=cv2.LINE_AA)
 
         ##>>>> classification badge above box
