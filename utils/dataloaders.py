@@ -320,7 +320,8 @@ class LoadImages:
     def __init__(self, path, img_size=640, stride=32, auto=True, transforms=None, vid_stride=1):
         """Initializes YOLOv5 loader for images/videos, supporting glob patterns, directories, and lists of paths."""
         if isinstance(path, str) and Path(path).suffix == ".txt":  # *.txt file with img/vid/dir on each line
-            path = Path(path).read_text().rsplit()
+            # path = Path(path).read_text().rsplit()
+            path = Path(path).read_text().splitlines() ## support txt file that have whitespace in paths
         files = []
         for p in sorted(path) if isinstance(path, (list, tuple)) else [path]:
             p = str(Path(p).resolve())
