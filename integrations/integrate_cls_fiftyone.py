@@ -1,10 +1,14 @@
 """ 
 wrap yolo classification model into fiftyone usage,
 in a step by step implementation manner 
-"""
 
-""" 
 20240610 step1: provide functionality that can `load` and provide `predict` `embed`, `logits` from a yolo classification model to fiftyone, in common format (eg., np.ndarray), not in fiftyone class.
+20260318 step2: support classification pipeline for a folder of images:
+    - input:  image folder
+    - output: (1) CSV label file in a general classification dataset format
+              (2) ImageNet-style folder layout (label sub-dirs) with symlinked / copied images
+              (3) labeled visualization images with confidence overlaid
+    - entry:  run_classification() + main() + create_argparser()
 """
 
 ##-----------------------------------------------
@@ -13,8 +17,11 @@ in a step by step implementation manner
 ##---- import std
 import os
 import sys
+import csv
+import shutil
 import argparse
 import logging
+from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -32,6 +39,7 @@ import fiftyone.core.models as focm
 
 ##---- import ultraylitic yolov5 related 3rdparties
 import cv2
+from PIL import Image, ImageDraw, ImageFont
 from models.common import DetectMultiBackend
 from utils.torch_utils import select_device
 from utils.augmentations import classify_transforms, letterbox
@@ -46,6 +54,7 @@ from utils.dataloaders import (
 
 ##-----------------------------------------------
 ##---- vars
+logger = logging.getLogger(__name__)
 
 ##-----------------------------------------------
 ##---- utils
@@ -73,7 +82,7 @@ class ClassificationModelWrapper(nn.Module):
         
         ##>>>> load model
         ## NOTE: use internal class_id -> class_label mapping, but provide extra mapping mechanism for user (eg., to ch name)
-        self.device = select_device(device) if device is None else device
+        self.device = select_device(device) if device is not None else device
         
         model = DetectMultiBackend(weights, device=self.device)
         
@@ -266,6 +275,41 @@ def glob(
                 image_paths.append(os.path.join(root, file))
     return image_paths
 
+
+def load_label_mappings_from_csv(csv_path: str) -> dict:
+    """Load a label mapping CSV and return an ``ori_label → remapped_label`` dict.
+
+    Expected CSV format (no header row required; header row is auto-detected and
+    skipped if the first cell cannot be converted to int)::
+
+        class_id, remapped_label, ori_label
+        0,        Magpie,         Pica pica
+        1,        Common Swift,   Apus apus
+
+    Args:
+        csv_path: path to the CSV file
+
+    Returns:
+        dict mapping ``ori_label`` (column 3) → ``remapped_label`` (column 2)
+    """
+    mappings = {}
+    with open(csv_path, "r", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if len(row) < 3:
+                continue
+            ##>>>> auto-skip header row: if first cell is not an integer, treat as header
+            try:
+                int(row[0].strip())
+            except ValueError:
+                continue
+            ori_label     = row[2].strip()
+            remapped_label = row[1].strip()
+            mappings[ori_label] = remapped_label
+    logger.info(f"[load_label_mappings_from_csv] loaded {len(mappings)} mappings from {csv_path}")
+    return mappings
+
+
 ##-----------------------------------------------
 ##---- workflows
 def compute_labels(image_paths:str, model, batch_size:int=16, img_size:int=224, topk:int = 1, label_mappings:dict=None):
@@ -331,43 +375,390 @@ def compute_embeddings(image_paths:str, model, batch_size:int=16, img_size:int=2
     results = np.concatenate(results, axis=0) ## concat along the first dim
     return results
 
+
+##-----------------------------------------------
+##---- output helpers
+
+def save_results_to_csv(results: list, output_dir: str, filename: str = "predictions.csv") -> str:
+    """Save classification results to a CSV file.
+
+    CSV columns: image_path, top1_label, top1_conf, [top2_label, top2_conf, ...]
+    This is a common flat format compatible with most downstream tools.
+
+    Args:
+        results: list of (path, topk_labels, logits) tuples returned by compute_labels()
+        output_dir: directory to write the CSV file
+        filename: output CSV filename
+
+    Returns:
+        absolute path of the written CSV file
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    csv_path = os.path.join(output_dir, filename)
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+
+        ##>>>> header — detect topk from first result
+        topk = len(results[0][1]) if results else 1
+        header = ["image_path"]
+        for k in range(topk):
+            header += [f"top{k+1}_label", f"top{k+1}_conf"]
+        writer.writerow(header)
+
+        ##>>>> rows
+        for path, topk_labels, _logits in results:
+            row = [path]
+            for label_entry in topk_labels:
+                ## label_entry: (remapped_label, conf, original_label)
+                row += [label_entry[0], f"{float(label_entry[1]):.6f}"]
+            writer.writerow(row)
+
+    logger.info(f"[save_results_to_csv] saved {len(results)} records → {csv_path}")
+    return csv_path
+
+
+def save_results_to_imagenet_layout(results: list, output_dir: str, copy_files: bool = False) -> str:
+    """Organise images into an ImageNet-style folder layout based on top-1 prediction.
+
+    Output structure::
+
+        output_dir/
+            label_A/
+                image1.jpg
+                image2.jpg
+            label_B/
+                image3.jpg
+
+    By default symbolic links are created (fast, saves disk).  Set
+    ``copy_files=True`` to physically copy the files instead.
+
+    Args:
+        results: list of (path, topk_labels, logits) from compute_labels()
+        output_dir: root directory for the imagenet-style layout
+        copy_files: if True, copy files; otherwise create symlinks
+
+    Returns:
+        output_dir path
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    for path, topk_labels, _logits in results:
+        top1_label = topk_labels[0][0]  ## remapped_label
+        label_dir = os.path.join(output_dir, top1_label)
+        os.makedirs(label_dir, exist_ok=True)
+
+        dst = os.path.join(label_dir, os.path.basename(path))
+        if os.path.exists(dst) or os.path.islink(dst):
+            os.remove(dst)
+
+        if copy_files:
+            shutil.copy2(path, dst)
+        else:
+            os.symlink(os.path.abspath(path), dst)
+
+    logger.info(f"[save_results_to_imagenet_layout] organised {len(results)} images → {output_dir}")
+    return output_dir
+
+
+def save_labeled_images(results: list, output_dir: str,
+                        font_size: int = 26,
+                        bg_color: tuple = (180, 60, 0),    # BGR — blue
+                        text_color: tuple = (255, 255, 255),
+                        padding: int = 6) -> str:
+    """Render top-1 classification label + confidence onto each image and save.
+
+    The label is drawn in a filled-rectangle badge style (blue background,
+    white text) at the top-left corner of the image.
+    Supports Chinese characters via PIL (simsun.ttc font).
+
+    Args:
+        results: list of (path, topk_labels, logits) from compute_labels()
+        output_dir: directory to write visualised images
+        font_size: PIL font size (default: 26)
+        bg_color: BGR tuple for the label background rectangle
+        text_color: BGR tuple for the label text
+        padding: pixels of padding around the text inside the badge
+
+    Returns:
+        output_dir path
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    ##>>>> load font once — fallback to absolute path on macOS if needed
+    try:
+        _font = ImageFont.truetype("simsun.ttc", font_size)
+    except Exception:
+        _font = ImageFont.truetype("/Users/weiliu/Library/Fonts/simsun.ttc", font_size)
+
+    for path, topk_labels, _logits in results:
+        im_bgr = cv2.imread(path)
+        if im_bgr is None:
+            logger.warning(f"[save_labeled_images] cannot read image: {path}")
+            continue
+
+        top1_label = topk_labels[0][0]
+        top1_conf  = float(topk_labels[0][1])
+        text = f"{top1_label} {top1_conf:.2f}"
+        if not isinstance(text, str):
+            text = text.decode("utf-8")
+
+        ##>>>> convert BGR → RGB for PIL
+        img_pil = Image.fromarray(cv2.cvtColor(im_bgr, cv2.COLOR_BGR2RGB))
+
+        ##>>>> measure text bounding box via PIL (supports CJK)
+        draw_tmp = ImageDraw.Draw(img_pil)
+        bbox = draw_tmp.textbbox((0, 0), text, font=_font)  # (left, top, right, bottom)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+
+        x0, y0 = padding, padding
+        bg_x2 = x0 + text_w + padding * 2
+        bg_y2 = y0 + text_h + padding * 2
+
+        ##>>>> clamp to image boundary
+        img_w, img_h = img_pil.size
+        bg_x2 = min(bg_x2, img_w - 1)
+        bg_y2 = min(bg_y2, img_h - 1)
+
+        ##>>>> draw filled background rectangle (PIL uses RGB)
+        bg_color_rgb   = (bg_color[2],   bg_color[1],   bg_color[0])
+        text_color_rgb = (text_color[2], text_color[1], text_color[0])
+        draw = ImageDraw.Draw(img_pil)
+        draw.rectangle([x0, y0, bg_x2, bg_y2], fill=bg_color_rgb)
+
+        ##>>>> draw text on top of the background
+        draw.text((x0 + padding, y0 + padding), text, font=_font, fill=text_color_rgb)
+
+        ##>>>> convert back to BGR and save
+        im_out = cv2.cvtColor(np.asarray(img_pil), cv2.COLOR_RGB2BGR)
+        dst = os.path.join(output_dir, os.path.basename(path))
+        cv2.imwrite(dst, im_out)
+
+    logger.info(f"[save_labeled_images] saved labeled images → {output_dir}")
+    return output_dir
+
+
+##-----------------------------------------------
+##---- main pipeline
+
+def run_classification(
+    data: str,
+    weights: str,
+    output_dir: str,
+    batch_size: int = 16,
+    imgsz: int = 224,
+    topk: int = 1,
+    device: str = "",
+    label_mappings: dict = None,
+    save_csv: bool = True,
+    save_imagenet_layout: bool = True,
+    save_viz: bool = True,
+    copy_files: bool = False,
+) -> dict:
+    """Full classification pipeline for an image folder.
+
+    Steps:
+        1. Collect image paths from ``data`` folder (recursively).
+        2. Load model from ``weights``.
+        3. Run batch classification → results list.
+        4. (Optional) Save CSV label file.
+        5. (Optional) Save ImageNet-style folder layout.
+        6. (Optional) Save visualised labeled images.
+
+    Args:
+        data:                  path to image folder (or list of image paths)
+        weights:               path to model weights (.pt)
+        output_dir:            root directory for all outputs
+        batch_size:            inference batch size
+        imgsz:                 input image size (square)
+        topk:                  number of top-K predictions to keep per image
+        device:                torch device string, e.g. '' / 'cpu' / '0'
+        label_mappings:        optional dict mapping model class names to human-readable labels
+        save_csv:              whether to save predictions.csv
+        save_imagenet_layout:  whether to organise images into label sub-dirs
+        save_viz:              whether to save visualised labeled images
+        copy_files:            if True, copy files in imagenet layout; else symlink
+
+    Returns:
+5        dict with keys: 'results', 'csv_path', 'layout_dir', 'viz_dir'
+    """
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    ##>>>> 1. collect image paths
+    if isinstance(data, (str, Path)) and os.path.isdir(data):
+        image_paths = glob(str(data))
+    elif isinstance(data, list):
+        image_paths = data
+    else:
+        raise ValueError(f"data must be an image folder path or a list of paths, got: {data}")
+
+    if not image_paths:
+        logger.warning(f"[run_classification] no images found under: {data}")
+        return {"results": [], "csv_path": None, "layout_dir": None, "viz_dir": None}
+
+    logger.info(f"[run_classification] found {len(image_paths)} images, loading model …")
+
+    ##>>>> 2. load model
+    model = ClassificationModelWrapper(weights, device=device, label_mappings=label_mappings)
+
+    ##>>>> 3. compute labels
+    results = compute_labels(
+        image_paths=image_paths,
+        model=model,
+        batch_size=batch_size,
+        img_size=imgsz,
+        topk=topk,
+        label_mappings=label_mappings,
+    )
+    logger.info(f"[run_classification] inference done, {len(results)} images processed.")
+
+    os.makedirs(output_dir, exist_ok=True)
+    output = {"results": results, "csv_path": None, "layout_dir": None, "viz_dir": None}
+
+    ##>>>> 4. save CSV
+    if save_csv:
+        output["csv_path"] = save_results_to_csv(results, output_dir)
+
+    ##>>>> 5. ImageNet-style layout
+    if save_imagenet_layout:
+        layout_dir = os.path.join(output_dir, "imagenet_layout")
+        output["layout_dir"] = save_results_to_imagenet_layout(results, layout_dir, copy_files=copy_files)
+
+    ##>>>> 6. labeled visualization images
+    if save_viz:
+        viz_dir = os.path.join(output_dir, "labeled_images")
+        output["viz_dir"] = save_labeled_images(results, viz_dir)
+
+    logger.info(f"[run_classification] all outputs saved to: {output_dir}")
+    return output
+
+
+##-----------------------------------------------
+##---- argument parser
+
 def create_argparser():
-    """ make the argument parser for this script 
+    """ make the argument parser for this script
     NOTE:
         make it a function, so that it can be used in other scripts, eg., notebooks
     """
-    parser = argparse.ArgumentParser(description="Wrap yolo classification model into fiftyone usage")
+    parser = argparse.ArgumentParser(description="Classify images in a folder with a YOLOv5 classification model")
     parser.add_argument(
         "--data",
         type=str,
-        default="../datasets/mnist",
-        help="dataset dir",
+        required=True,
+        help="input image folder path",
     )
     parser.add_argument(
         "--weights",
         type=str,
-        default="yolov5s-cls.pt",
-        help="model.pt path(s)",
+        required=True,
+        help="model weights path (.pt)",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="./cls_output",
+        help="root output directory for all results (default: ./cls_output)",
     )
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=128,
-        help="batch size",
+        default=16,
+        help="inference batch size (default: 16)",
     )
     parser.add_argument(
         "--imgsz",
         type=int,
         default=224,
-        help="inference size (pixels)",
+        help="inference image size in pixels, square (default: 224)",
+    )
+    parser.add_argument(
+        "--topk",
+        type=int,
+        default=1,
+        help="save top-K predictions per image (default: 1)",
     )
     parser.add_argument(
         "--device",
         type=str,
         default="",
-        help="cuda device, i.e. 0 or 0,1,2,3 or cpu",
+        help="torch device string: '' (auto) / 'cpu' / '0' (default: '')",
+    )
+    parser.add_argument(
+        "--label_mappings",
+        type=str,
+        default=None,
+        help="optional path to a CSV file for label remapping. "
+             "Expected columns (no header): class_id, remapped_label, ori_label. "
+             "Builds an ori_label → remapped_label mapping used in output.",
+    )
+    parser.add_argument(
+        "--no_csv",
+        action="store_true",
+        help="skip saving predictions.csv",
+    )
+    parser.add_argument(
+        "--no_imagenet_layout",
+        action="store_true",
+        help="skip saving ImageNet-style folder layout",
+    )
+    parser.add_argument(
+        "--no_viz",
+        action="store_true",
+        help="skip saving labeled visualization images",
+    )
+    parser.add_argument(
+        "--copy_files",
+        action="store_true",
+        help="copy image files in imagenet layout instead of creating symlinks",
     )
     return parser
+
+
+##-----------------------------------------------
+##---- main entry
+
+def main(args=None):
+    """Parse CLI arguments and run the classification pipeline.
+
+    Can be called from other scripts or notebooks by passing a list of
+    argument strings directly::
+
+        from integrate_cls_fiftyone import main
+        results = main(["--data", "/imgs", "--weights", "model.pt",
+                        "--output_dir", "/out", "--topk", "3"])
+
+    Args:
+        args: list of CLI argument strings (default: sys.argv[1:])
+
+    Returns:
+        dict returned by run_classification()
+    """
+    parser = create_argparser()
+    opt = parser.parse_args(args)
+
+    ##>>>> load optional label mappings from CSV file
+    label_mappings = None
+    if opt.label_mappings is not None:
+        label_mappings = load_label_mappings_from_csv(opt.label_mappings)
+        logger.info(f"[main] loaded label_mappings with {len(label_mappings)} entries")
+
+    return run_classification(
+        data=opt.data,
+        weights=opt.weights,
+        output_dir=opt.output_dir,
+        batch_size=opt.batch_size,
+        imgsz=opt.imgsz,
+        topk=opt.topk,
+        device=opt.device,
+        label_mappings=label_mappings,
+        save_csv=not opt.no_csv,
+        save_imagenet_layout=not opt.no_imagenet_layout,
+        save_viz=not opt.no_viz,
+        copy_files=opt.copy_files,
+    )
+
+
 
 ##-----------------------------------------------
 ##---- unit_test
@@ -486,9 +877,4 @@ def unit_test_cmp_with_yolov5_predict():
 ##-----------------------------------------------
 ##---- main
 if __name__ == "__main__":
-    ##>>>> parse args
-    # unit_test_cmp_with_yolov5_predict()
-    
-    unit_test_batch_predict()
-    
-    pass
+    main()
