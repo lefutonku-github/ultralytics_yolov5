@@ -52,7 +52,7 @@ from utils.torch_utils import select_device
 from utils.general import non_max_suppression, scale_boxes, xyxy2xywh
 
 ## ---- local utils sub-package
-from detcls_utils import (
+from .detcls_utils import (
     glob_images,
     load_label_mappings_from_csv,
     DetectionTransform,
@@ -89,7 +89,7 @@ class DetectionModelWrapper(nn.Module):
         self._model  = DetectMultiBackend(weights, device=self._device)
         self._model.eval()
         self._label_mappings = label_mappings
-
+        
     # ----------------------------------------------------------
     @property
     def stride(self) -> int:
