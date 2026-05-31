@@ -1,3 +1,4 @@
+# DEPRECATED: Moved to xlab_inat_lefutonku/src/xlab_inat/integrations/
 """
 Shared utility sub-package for integrate_detcls_fiftyone.py.
 

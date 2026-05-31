@@ -1,4 +1,8 @@
 """
+DEPRECATED: Moved to xlab_inat_lefutonku as
+``xlab_inat.integrations.legacy.integrate_detcls_fiftyone_v1``.
+Use ``xlab_inat.integrations.detcls_v2`` for new work.
+
 integrate_detcls_fiftyone.py
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Unified detection + classification pipeline for an ImageFolder-style
