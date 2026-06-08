@@ -1,3 +1,4 @@
+# DEPRECATED: migrated to xlab_inat.integrations.cls_v2 / det_v1 (legacy/ for frozen reference).
 """ 
 wrap yolo classification model into fiftyone usage,
 in a step by step implementation manner 

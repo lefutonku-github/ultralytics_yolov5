@@ -1,3 +1,4 @@
+# DEPRECATED: migrated to xlab_inat.integrations.cls_v2 / det_v1 (legacy/ for frozen reference).
 """ 
 provide v1 version of integrate detection with fiftyone.
 - directly use existing `detect.py` provided by yolo, save offline results and then load to fiftyone dataset using `add_yolo_label`
