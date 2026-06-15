@@ -124,6 +124,9 @@ extra = [
 "Source" = "https://github.com/ultralytics/yolov5/"
 
 # Setuptools package discovery (flat-layout YOLOv5 repo) ---------------------------------------------------------------
+[tool.setuptools]
+py-modules = ["benchmarks", "detect", "export", "hubconf", "train", "val"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["models*", "utils*", "classify*", "segment*", "integrations*"]
