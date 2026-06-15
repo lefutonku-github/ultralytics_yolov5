@@ -24,7 +24,7 @@ build-backend = "setuptools.build_meta"
 
 # Project settings -----------------------------------------------------------------------------------------------------
 [project]
-version = 7.0.0
+version = "7.0.0"
 name = "YOLOv5"
 description = "Ultralytics YOLOv5 for SOTA object detection, instance segmentation and image classification."
 readme = "README.md"
@@ -122,6 +122,12 @@ extra = [
 "Bug Reports" = "https://github.com/ultralytics/yolov5/issues"
 "Funding" = "https://ultralytics.com"
 "Source" = "https://github.com/ultralytics/yolov5/"
+
+# Setuptools package discovery (flat-layout YOLOv5 repo) ---------------------------------------------------------------
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["models*", "utils*", "classify*", "segment*", "integrations*"]
+exclude = ["data*"]
 
 # Tools settings -------------------------------------------------------------------------------------------------------
 [tool.pytest]
