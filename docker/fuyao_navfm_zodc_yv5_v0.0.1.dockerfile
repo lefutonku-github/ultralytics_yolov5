@@ -1,11 +1,11 @@
-# YOLOv5 training image — see docker/README.md
+# navfm_zodc_yv5 training image — see docker/README.md
 #
-# BASE_IMAGE (see docker/build.sh vs push_fuyao.sh):
+# BASE_IMAGE (see docker/build_local.sh vs push_fuyao.sh):
 #   Fuyao (Dockerfile default): infra-registry.cn-wulanchabu.cr.aliyuncs.com/data-infra/fuyao-image-convert:pytorch-2.11.0-cuda12.8-cudnn9-runtime
-#   Local build only:           ywvk8934o3f50v3q9i-nvcr.xuanyuan.run/nvidia/pytorch:25.02-py3  (--build-arg via docker/build.sh)
+#   Local build only:           ywvk8934o3f50v3q9i-nvcr.xuanyuan.run/nvidia/pytorch:25.02-py3  (--build-arg via docker/build_local.sh)
 #
 # Local docker build:
-#   bash docker/build.sh
+#   bash docker/build_local.sh
 #
 # Fuyao remote build & push (cwd must be repo root; script handles cd):
 #   bash docker/push_fuyao.sh
@@ -34,7 +34,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 COPY docker/assets/ossutil-2.3.0-linux-amd64.zip /tmp/ossutil.zip
 COPY docker/constraints-base.txt docker/install_yolov5.sh /tmp/docker/
-COPY . /tmp/yolov5
+COPY . /tmp/navfm_zodc_yv5_src
 
 RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && echo ${TZ} > /etc/timezone \
     && (test -f /etc/apt/sources.list.d/ubuntu.sources && sed -i 's|archive.ubuntu.com|mirrors.aliyun.com|g' /etc/apt/sources.list.d/ubuntu.sources && sed -i 's|security.ubuntu.com|mirrors.aliyun.com|g' /etc/apt/sources.list.d/ubuntu.sources || true) \
@@ -49,8 +49,8 @@ RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && echo ${TZ} > /etc/timezo
     && install -m 755 /tmp/ossutil/ossutil-2.3.0-linux-amd64/ossutil /usr/local/bin/ossutil \
     && rm -rf /tmp/ossutil /tmp/ossutil.zip \
     && chmod +x /tmp/docker/install_yolov5.sh \
-    && YOLOV5_SRC=/tmp/yolov5 DOCKER_DIR=/tmp/docker bash /tmp/docker/install_yolov5.sh \
-    && rm -rf /tmp/yolov5 /tmp/docker
+    && YOLOV5_SRC=/tmp/navfm_zodc_yv5_src DOCKER_DIR=/tmp/docker bash /tmp/docker/install_yolov5.sh \
+    && rm -rf /tmp/navfm_zodc_yv5_src /tmp/docker
 
 WORKDIR /workspace
 
@@ -59,6 +59,6 @@ WORKDIR /workspace
 # # fuyao build using specified dockerfile; other options see:
 # # https://xiaopeng.feishu.cn/wiki/EaCBwUWfKiLN2QkU3hxcsMHRn0f
 # bash docker/push_fuyao.sh
-# # or: fuyao docker --push --dockerfile="./docker/fuyao_yolov5_v0.0.1.dockerfile" --image-tag "yolov5_train-v0.0.1"
+# # or: fuyao docker --push --dockerfile="./docker/fuyao_navfm_zodc_yv5_v0.0.1.dockerfile" --image-tag "navfm_zodc_yv5-v0.0.1"
 #
-# Local build: bash docker/build.sh
+# Local build: bash docker/build_local.sh

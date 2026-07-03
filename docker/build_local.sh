@@ -2,18 +2,18 @@
 # Local docker build only (NVCR mirror base image).
 #
 # Usage (from anywhere):
-#   bash docker/build.sh
-#   IMAGE_TAG=yolov5-train:my-dev bash docker/build.sh
+#   bash docker/build_local.sh
+#   IMAGE_TAG=navfm_zodc_yv5:my-dev bash docker/build_local.sh
 set -euo pipefail
 
 DOCKER_DIR="$(cd "$(dirname "$0")" && pwd)"
 YOLOV5_ROOT="$(cd "${DOCKER_DIR}/.." && pwd)"
 
 BASE_IMAGE_LOCAL="ywvk8934o3f50v3q9i-nvcr.xuanyuan.run/nvidia/pytorch:25.02-py3"
-DOCKERFILE="${DOCKER_DIR}/fuyao_yolov5_v0.0.1.dockerfile"
+DOCKERFILE="${DOCKER_DIR}/fuyao_navfm_zodc_yv5_v0.0.1.dockerfile"
 OSSUTIL_ZIP="${DOCKER_DIR}/assets/ossutil-2.3.0-linux-amd64.zip"
 OSSUTIL_URL="https://gosspublic.alicdn.com/ossutil/v2/2.3.0/ossutil-2.3.0-linux-amd64.zip"
-IMAGE_TAG="${IMAGE_TAG:-yolov5-train:local-v0.0.1}"
+IMAGE_TAG="${IMAGE_TAG:-navfm_zodc_yv5:local-v0.0.1}"
 
 if [[ ! -f "${YOLOV5_ROOT}/train.py" ]]; then
   echo "ERROR: expected YOLOv5 repo root at ${YOLOV5_ROOT}" >&2
