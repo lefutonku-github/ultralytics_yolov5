@@ -1,4 +1,6 @@
 # Repo-specific DockerIgnore -------------------------------------------------------------------------------------------
+docker/smoke_data/
+docker/smoke_runs/
 .git
 .cache
 .idea

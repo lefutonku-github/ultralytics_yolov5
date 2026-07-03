@@ -1,0 +1,6 @@
+# Align with xlab_inat pins; torch/torchvision kept via uv --no-upgrade.
+numpy>=1.23.5,<2
+opencv-python-headless>=4.6,<4.10
+ultralytics>=8.0.232,<8.5
+tensorboard>=2.13.0
+setuptools>=65.5.1,<81
