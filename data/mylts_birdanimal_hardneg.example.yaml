@@ -1,0 +1,41 @@
+# YOLOv5 data.yaml example — mylts_birdanimal v0.0.8 + background (hardneg / Focal)
+#
+# Prerequisite: export FiftyOne dataset with examples/dataset_export/mylts_birdanimal_v0.0.8.yaml
+#   dataset_name: mylts_birdanimal_det_master
+#   view_name: gitver_v0.0.8_trainval_full
+#   name_slug: bdamdet_gitver_v008
+#
+# Then merge hard-negative boxes (class: background) into labels/ under the same layout.
+# See docs/HARDNEG_FOCAL.md
+#
+# Train:
+#   python train.py --hyp data/hyps/hyp.hardneg-focal.yaml --data data/mylts_birdanimal_hardneg.example.yaml \
+#     --weights yolov5s.pt --img 1280 --batch-size 16
+
+# Dataset root: xlab export output (adjust to your machine)
+path: ~/Material/03.xlab_inat/01.dataset/detection_fused/mylts_birdanimal_det_master-released_versions/bdamdet_gitver_v008
+
+train: images/train
+val: images/val
+test: images/test
+
+# 7 ecological targets + 1 background class for hard-negative mining
+nc: 8
+names:
+  0: bird
+  1: animal
+  2: plant
+  3: tree
+  4: leaf
+  5: flower
+  6: fruit
+  7: background
+
+# --- Notes ---
+# - person is excluded at export time (see mylts_birdanimal_v0.0.8.yaml label_filter).
+# - If your export still uses the full 80-slot COCO-style class list from MYLTS_BIRDANIMAL_YOLO_CLASSES,
+#   either re-export with classes limited to the 7 targets above, or set nc/names to match the export
+#   and append background as the last class (e.g. nc: 81, index 80: background).
+# - background boxes: annotate confusing textures (rock, litter, shadow, bare branch) as class 7;
+#   inference filters background via detect.py / Yolov5DetectionBackend (exclude_background=True).
+# - Fine-tune from species_det_v021 (17-class) requires head re-init for nc=8 or partial load with --cfg.

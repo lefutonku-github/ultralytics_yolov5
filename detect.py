@@ -56,9 +56,11 @@ from utils.general import (
     check_requirements,
     colorstr,
     cv2,
+    filter_excluded_class_predictions,
     increment_path,
     non_max_suppression,
     print_args,
+    resolve_background_cls,
     scale_boxes,
     strip_optimizer,
     xyxy2xywh,
@@ -96,6 +98,7 @@ def run(
     half=False,  # use FP16 half-precision inference
     dnn=False,  # use OpenCV DNN for ONNX inference
     vid_stride=1,  # video frame-rate stride
+    exclude_background=True,  # drop detections with class name "background"
 ):
     source = str(source)
     save_img = not nosave and not source.endswith(".txt")  # save inference images
@@ -115,6 +118,8 @@ def run(
     model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
     stride, names, pt = model.stride, model.names, model.pt
     imgsz = check_img_size(imgsz, s=stride)  # check image size
+    bg_cls = resolve_background_cls(names)
+    exclude_classes = [bg_cls] if exclude_background and bg_cls >= 0 else []
 
     # Dataloader
     bs = 1  # batch_size
@@ -157,6 +162,8 @@ def run(
         # NMS
         with dt[2]:
             pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
+            if exclude_classes:
+                pred = filter_excluded_class_predictions(pred, exclude_classes)
 
         # Second-stage classifier (optional)
         # pred = utils.general.apply_classifier(pred, classifier_model, im, im0s)
@@ -295,6 +302,12 @@ def parse_opt():
     parser.add_argument("--half", action="store_true", help="use FP16 half-precision inference")
     parser.add_argument("--dnn", action="store_true", help="use OpenCV DNN for ONNX inference")
     parser.add_argument("--vid-stride", type=int, default=1, help="video frame-rate stride")
+    parser.add_argument(
+        "--no-exclude-background",
+        dest="exclude_background",
+        action="store_false",
+        help="do not filter out the background class at inference",
+    )
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     print_args(vars(opt))

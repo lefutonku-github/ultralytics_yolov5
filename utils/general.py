@@ -1002,6 +1002,39 @@ def clip_segments(segments, shape):
         segments[:, 1] = segments[:, 1].clip(0, shape[0])  # y
 
 
+def resolve_background_cls(names, explicit_id=-1):
+    """Return class index for name 'background', or explicit_id if >= 0, else -1."""
+    if explicit_id is not None and int(explicit_id) >= 0:
+        return int(explicit_id)
+    if names is None:
+        return -1
+    if isinstance(names, dict):
+        for k, v in names.items():
+            if str(v).lower() == "background":
+                return int(k)
+    else:
+        for k, v in enumerate(names):
+            if str(v).lower() == "background":
+                return k
+    return -1
+
+
+def filter_excluded_class_predictions(predictions, exclude_classes):
+    """Remove detections whose class id is in exclude_classes (list of int)."""
+    if not exclude_classes:
+        return predictions
+    exclude = torch.tensor(list(exclude_classes), dtype=torch.long)
+    out = []
+    for pred in predictions:
+        if pred is None or pred.shape[0] == 0:
+            out.append(pred)
+            continue
+        device = pred.device
+        mask = ~torch.isin(pred[:, 5].long(), exclude.to(device))
+        out.append(pred[mask])
+    return out
+
+
 def non_max_suppression(
     prediction,
     conf_thres=0.25,

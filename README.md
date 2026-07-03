@@ -471,4 +471,16 @@ For YOLOv5 bug reports and feature requests please visit [GitHub Issues](https:/
   <a href="https://ultralytics.com/discord"><img src="https://github.com/ultralytics/assets/raw/main/social/logo-social-discord.png" width="3%" alt="Ultralytics Discord"></a>
 </div>
 
+## xlab_inat: Focal Loss + hard negative mining
+
+This tree includes optional training for confusing-background false positive reduction:
+
+- **Preset:** `data/hyps/hyp.hardneg-focal.yaml`
+- **Full guide:** [docs/HARDNEG_FOCAL.md](docs/HARDNEG_FOCAL.md)
+- **Hyp reference:** [data/hyps/README.md](data/hyps/README.md)
+
+```bash
+python train.py --hyp data/hyps/hyp.hardneg-focal.yaml --data your_data.yaml --weights yolov5s.pt
+```
+
 [tta]: https://docs.ultralytics.com/yolov5/tutorials/test_time_augmentation

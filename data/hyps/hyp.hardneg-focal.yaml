@@ -1,0 +1,47 @@
+# YOLOv5 hard-negative mining + Focal Loss preset (xlab_inat)
+# Usage:
+#   python train.py --hyp data/hyps/hyp.hardneg-focal.yaml --data your_data.yaml --weights yolov5s.pt
+# Multi-GPU DDP:
+#   python -m torch.distributed.run --nproc_per_node 4 --master_port 29500 \
+#     train.py --hyp data/hyps/hyp.hardneg-focal.yaml --data your_data.yaml --weights yolov5s.pt \
+#     --batch-size 64 --device 0,1,2,3
+# See data/hyps/README.md for parameter descriptions.
+
+lr0: 0.01
+lrf: 0.01
+momentum: 0.937
+weight_decay: 0.0005
+warmup_epochs: 3.0
+warmup_momentum: 0.8
+warmup_bias_lr: 0.1
+box: 0.05
+cls: 0.5
+cls_pw: 1.0
+obj: 1.1 # obj loss gain; train.py scales by imgsz and nl
+obj_pw: 1.0
+iou_t: 0.20
+anchor_t: 4.0
+fl_gamma: 2.0 # Focal Loss gamma (2.5 if false positives remain high)
+fl_alpha: 0.25 # Focal Loss alpha
+# Hard negative mining (obj loss)
+hnm_enabled: true
+neg_pos_ratio: 4.5 # max negatives per positive anchor (after topk pre-filter)
+hnm_topk_ratio: 0.3 # keep top 30% negatives by obj confidence before ratio cap
+hnm_hard_weight: 3.0 # extra multiplier for negatives with obj conf > hnm_conf_thresh
+hnm_conf_thresh: 0.3
+# Background class: set to class id, or -1 to auto-detect name "background" in data.yaml names
+background_cls: -1
+background_skip_box: true # train cls+obj only for background boxes (skip CIoU)
+hsv_h: 0.015
+hsv_s: 0.7
+hsv_v: 0.4
+degrees: 0.0
+translate: 0.1
+scale: 0.5
+shear: 0.0
+perspective: 0.0
+flipud: 0.0
+fliplr: 0.5
+mosaic: 1.0
+mixup: 0.0
+copy_paste: 0.0

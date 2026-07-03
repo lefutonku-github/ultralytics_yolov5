@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 
 from utils.metrics import bbox_iou
+from utils.general import resolve_background_cls
 from utils.torch_utils import de_parallel
 
 
@@ -111,15 +112,20 @@ class ComputeLoss:
 
         # Define criteria
         BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h["cls_pw"]], device=device))
-        BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h["obj_pw"]], device=device))
+        self.hnm_enabled = bool(h.get("hnm_enabled", False))
+        BCEobj = nn.BCEWithLogitsLoss(
+            pos_weight=torch.tensor([h["obj_pw"]], device=device),
+            reduction="none" if self.hnm_enabled else "mean",
+        )
 
         # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
         self.cp, self.cn = smooth_BCE(eps=h.get("label_smoothing", 0.0))  # positive, negative BCE targets
 
         # Focal loss
-        g = h["fl_gamma"]  # focal loss gamma
+        g = h.get("fl_gamma", 0.0)  # focal loss gamma
+        fl_alpha = h.get("fl_alpha", 0.25)
         if g > 0:
-            BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
+            BCEcls, BCEobj = FocalLoss(BCEcls, g, fl_alpha), FocalLoss(BCEobj, g, fl_alpha)
 
         m = de_parallel(model).model[-1]  # Detect() module
         self.balance = {3: [4.0, 1.0, 0.4]}.get(m.nl, [4.0, 1.0, 0.25, 0.06, 0.02])  # P3-P7
@@ -130,6 +136,8 @@ class ComputeLoss:
         self.nl = m.nl  # number of layers
         self.anchors = m.anchors
         self.device = device
+        self.background_cls = resolve_background_cls(getattr(de_parallel(model), "names", None), h.get("background_cls", -1))
+        self.background_skip_box = bool(h.get("background_skip_box", True))
 
     def __call__(self, p, targets):  # predictions, targets
         """Performs forward pass, calculating class, box, and object loss for given predictions and targets."""
@@ -153,7 +161,14 @@ class ComputeLoss:
                 pwh = (pwh.sigmoid() * 2) ** 2 * anchors[i]
                 pbox = torch.cat((pxy, pwh), 1)  # predicted box
                 iou = bbox_iou(pbox, tbox[i], CIoU=True).squeeze()  # iou(prediction, target)
-                lbox += (1.0 - iou).mean()  # iou loss
+                if iou.ndim == 0:
+                    iou = iou.unsqueeze(0)
+
+                box_mask = torch.ones(n, dtype=torch.bool, device=self.device)
+                if self.background_skip_box and self.background_cls >= 0:
+                    box_mask = tcls[i].view(-1) != self.background_cls
+                if box_mask.any():
+                    lbox += (1.0 - iou[box_mask]).mean()  # iou loss
 
                 # Objectness
                 iou = iou.detach().clamp(0).type(tobj.dtype)
@@ -174,7 +189,7 @@ class ComputeLoss:
                 # with open('targets.txt', 'a') as file:
                 #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
 
-            obji = self.BCEobj(pi[..., 4], tobj)
+            obji = self._obj_loss(pi[..., 4], tobj)
             lobj += obji * self.balance[i]  # obj loss
             if self.autobalance:
                 self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()
@@ -187,6 +202,52 @@ class ComputeLoss:
         bs = tobj.shape[0]  # batch size
 
         return (lbox + lobj + lcls) * bs, torch.cat((lbox, lobj, lcls)).detach()
+
+    def _obj_loss(self, obj_logits, tobj):
+        """Objectness loss with optional hard negative mining (per-GPU local batch, DDP-safe)."""
+        obj_loss_elem = self.BCEobj(obj_logits, tobj)
+        if not self.hnm_enabled:
+            return obj_loss_elem if obj_loss_elem.ndim == 0 else obj_loss_elem.mean()
+
+        pos_mask = tobj > 0
+        neg_mask = ~pos_mask
+        n_pos = max(int(pos_mask.sum().item()), 1)
+
+        loss_sum = obj_loss_elem.new_zeros(())
+        n_total = 0
+        if pos_mask.any():
+            loss_sum = loss_sum + obj_loss_elem[pos_mask].sum()
+            n_total += int(pos_mask.sum().item())
+
+        if neg_mask.any():
+            neg_elem = obj_loss_elem[neg_mask]
+            neg_logits = obj_logits[neg_mask]
+            neg_conf = neg_logits.sigmoid().detach()
+
+            topk_ratio = float(self.hyp.get("hnm_topk_ratio", 0.0))
+            if topk_ratio > 0:
+                k = max(1, int(neg_elem.numel() * topk_ratio))
+                k = min(k, neg_elem.numel())
+                idx = neg_conf.topk(k).indices
+                neg_elem = neg_elem[idx]
+                neg_conf = neg_conf[idx]
+
+            hard_w = float(self.hyp.get("hnm_hard_weight", 0.0))
+            conf_thresh = float(self.hyp.get("hnm_conf_thresh", 0.3))
+            if hard_w > 0:
+                neg_elem = neg_elem * (1.0 + hard_w * (neg_conf > conf_thresh).float())
+
+            neg_pos_ratio = float(self.hyp.get("neg_pos_ratio", 0.0))
+            if neg_pos_ratio > 0:
+                n_neg_keep = max(1, int(n_pos * neg_pos_ratio))
+                if neg_elem.numel() > n_neg_keep:
+                    idx = neg_conf.topk(n_neg_keep).indices
+                    neg_elem = neg_elem[idx]
+
+            loss_sum = loss_sum + neg_elem.sum()
+            n_total += neg_elem.numel()
+
+        return loss_sum / max(n_total, 1)
 
     def build_targets(self, p, targets):
         """Prepares model targets from input targets (image,class,x,y,w,h) for loss computation, returning class, box,
