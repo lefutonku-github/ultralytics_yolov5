@@ -11,7 +11,7 @@
 
 | 脚本 | 用途 | 命令 |
 |------|------|------|
-| [`build_local.sh`](build_local.sh) | **本地** `docker build`（NVCR 镜像 + `--build-arg BASE_IMAGE`） | `bash docker/build_local.sh` |
+| [`build_local.sh`](build_local.sh) | **本地** `docker build`（PyTorch 2.11.0 镜像 + `--build-arg BASE_IMAGE`） | `bash docker/build_local.sh` |
 | [`push_fuyao.sh`](push_fuyao.sh) | **扶摇远程** `fuyao docker --push`（Dockerfile 默认 fuyao-image-convert） | `bash docker/push_fuyao.sh` |
 
 二者互不调用。构建前若缺少 ossutil zip，各自独立下载。
@@ -21,7 +21,7 @@
 | 场景 | `BASE_IMAGE` |
 |------|----------------|
 | 扶摇 push（Dockerfile 默认） | `infra-registry.cn-wulanchabu.cr.aliyuncs.com/data-infra/fuyao-image-convert:pytorch-2.11.0-cuda12.8-cudnn9-runtime` |
-| 本地 build（`build_local.sh` 传入） | `ywvk8934o3f50v3q9i-nvcr.xuanyuan.run/nvidia/pytorch:25.02-py3` |
+| 本地 build（`build_local.sh` 传入） | `ywvk8934o3f50v3q9i.xuanyuan.run/pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime` |
 
 默认 IMAGE_TAG：
 
@@ -121,7 +121,7 @@ python -m torch.distributed.run --nproc_per_node 4 --master_port 29500 \
 ## 常见问题
 
 **Q: 本地构建忘了传 BASE_IMAGE？**  
-A: 只用 `bash docker/build_local.sh`，已内置 NVCR 本地镜像 URL。
+A: 只用 `bash docker/build_local.sh`，已内置与扶摇 fuyao-image-convert 同版本的 PyTorch 2.11.0 本地镜像 URL。
 
 **Q: 扶摇 push 要在哪个目录？**  
 A: `ultralytics_yolov5` 仓库根；用 `bash docker/push_fuyao.sh` 即可。

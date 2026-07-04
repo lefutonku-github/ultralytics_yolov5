@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local docker build only (NVCR mirror base image).
+# Local docker build only (PyTorch 2.11.0 mirror, same stack as Fuyao fuyao-image-convert).
 #
 # Usage (from anywhere):
 #   bash docker/build_local.sh
@@ -9,7 +9,7 @@ set -euo pipefail
 DOCKER_DIR="$(cd "$(dirname "$0")" && pwd)"
 YOLOV5_ROOT="$(cd "${DOCKER_DIR}/.." && pwd)"
 
-BASE_IMAGE_LOCAL="ywvk8934o3f50v3q9i-nvcr.xuanyuan.run/nvidia/pytorch:25.02-py3"
+BASE_IMAGE_LOCAL="ywvk8934o3f50v3q9i.xuanyuan.run/pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime"
 DOCKERFILE="${DOCKER_DIR}/fuyao_navfm_zodc_yv5_v0.0.1.dockerfile"
 OSSUTIL_ZIP="${DOCKER_DIR}/assets/ossutil-2.3.0-linux-amd64.zip"
 OSSUTIL_URL="https://gosspublic.alicdn.com/ossutil/v2/2.3.0/ossutil-2.3.0-linux-amd64.zip"
@@ -37,4 +37,5 @@ docker build \
   "${YOLOV5_ROOT}"
 
 echo "==> Build OK: ${IMAGE_TAG}"
-echo "==> Fuyao remote push: bash docker/push_fuyao.sh"
+echo "==> Next (optional, separate): push to Fuyao with  bash docker/push_fuyao.sh"
+echo "==> Next (optional, local smoke): bash docker/smoke_train_docker.sh"

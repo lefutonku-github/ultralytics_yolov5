@@ -36,6 +36,7 @@ DEPS=(
   "pycocotools>=2.0.6"
   "tensorboard>=2.13.0"
   "setuptools>=65.5.1,<81"
+  "dill"
 )
 
 # ultralytics pulls opencv-python; install without deps then add headless separately.

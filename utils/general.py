@@ -70,6 +70,14 @@ os.environ["OMP_NUM_THREADS"] = "1" if platform.system() == "darwin" else str(NU
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # suppress verbose TF compiler warnings in Colab
 
 
+def torch_load(f, map_location=None):
+    """Load checkpoints; PyTorch >=2.6 defaults weights_only=True which breaks legacy YOLOv5 .pt files."""
+    try:
+        return torch.load(f, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(f, map_location=map_location)
+
+
 def is_ascii(s=""):
     """Checks if input string `s` contains only ASCII characters; returns `True` if so, otherwise `False`."""
     s = str(s)  # convert list, tuple, None, etc. to str
@@ -1156,7 +1164,7 @@ def strip_optimizer(f="best.pt", s=""):
 
     Example: from utils.general import *; strip_optimizer()
     """
-    x = torch.load(f, map_location=torch.device("cpu"))
+    x = torch_load(f, map_location=torch.device("cpu"))
     if x.get("ema"):
         x["model"] = x["ema"]  # replace model with ema
     for k in "optimizer", "best_fitness", "ema", "updates":  # keys

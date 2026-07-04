@@ -1,3 +1,5 @@
 smoke_data/
 smoke_runs/
+smoke_runs_docker/
+.ultralytics_config/
 assets/ossutil-*.zip
