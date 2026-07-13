@@ -21,14 +21,14 @@
 | 场景 | `BASE_IMAGE` |
 |------|----------------|
 | 扶摇 push（Dockerfile 默认） | `infra-registry.cn-wulanchabu.cr.aliyuncs.com/data-infra/fuyao-image-convert:pytorch-2.11.0-cuda12.8-cudnn9-runtime` |
-| 本地 build（`build_local.sh` 传入） | `ywvk8934o3f50v3q9i.xuanyuan.run/pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime` |
+| 本地 build（`build_local.sh` 传入） | `registry.cn-shanghai.aliyuncs.com/xlab-inat/xlab-inat:official-pytorch-2.11.0-cuda12.8-cudnn9-runtime` |
 
 默认 IMAGE_TAG：
 
 | 场景 | 默认 tag |
 |------|----------|
-| 扶摇 push | `navfm_zodc_yv5-v0.0.1` |
-| 本地 build | `navfm_zodc_yv5:local-v0.0.1` |
+| 扶摇 push | `navfm_zodc_yv5-v0.0.1`（不变） |
+| 本地 build | `registry.cn-shanghai.aliyuncs.com/xlab-inat/xlab-inat:liuw7-navfm_zodc_yv5-v0.0.1-local` |
 
 ## 与 vfm_apple 扶摇构建的差异
 

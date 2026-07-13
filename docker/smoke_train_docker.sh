@@ -7,7 +7,7 @@ SMOKE_ROOT="${DOCKER_DIR}/smoke_data"
 RUNS_DIR="${DOCKER_DIR}/smoke_runs_docker"
 DATASET_SRC="/mnt/wsl/data2_jd4t/Material/11.spiece_recognition/01.dataset/detection_fused/mylts_birdanimal_det_master-released_versions/mylts_birdanimal_det_master-gitver_v0.0.7_trainval_full"
 PRETRAINED="/mnt/wsl/data1_jd4t/Material/11.spiece_recognition/11.models/11.training/07.active_det_birdanimal/20241108_075457-yolov5s1280-fulltrain_add_birdanimal_det_from_web-mylts_birdanimal_det_master-gitver_trainval_v0.0.6_full-20241107_073938-yolov5s1280_prew/weights/best.pt"
-IMAGE_TAG="${IMAGE_TAG:-navfm_zodc_yv5:local-v0.0.1}"
+IMAGE_TAG="${IMAGE_TAG:-registry.cn-shanghai.aliyuncs.com/xlab-inat/xlab-inat:liuw7-navfm_zodc_yv5-v0.0.1-local}"
 
 bash "${DOCKER_DIR}/prepare_smoke_data.sh" "${DATASET_SRC}"
 

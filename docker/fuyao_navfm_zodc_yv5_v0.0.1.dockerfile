@@ -2,7 +2,7 @@
 #
 # BASE_IMAGE (see docker/build_local.sh vs push_fuyao.sh):
 #   Fuyao (Dockerfile default): infra-registry.cn-wulanchabu.cr.aliyuncs.com/data-infra/fuyao-image-convert:pytorch-2.11.0-cuda12.8-cudnn9-runtime
-#   Local build only:           ywvk8934o3f50v3q9i.xuanyuan.run/pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime  (--build-arg via docker/build_local.sh)
+#   Local build only:           registry.cn-shanghai.aliyuncs.com/xlab-inat/xlab-inat:official-pytorch-2.11.0-cuda12.8-cudnn9-runtime  (--build-arg via docker/build_local.sh)
 #
 # Local docker build:
 #   bash docker/build_local.sh
